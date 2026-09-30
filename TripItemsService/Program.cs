@@ -79,6 +79,12 @@ app.UseSwaggerUI();
 app.UseAuthentication();
 app.UseAuthorization();
 
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<TripItemsDbContext>();
+    db.Database.Migrate();
+}
+
 app.MapGroup("/trip-items")
    .RequireAuthorization()
    .MapTripItemEndpoints();

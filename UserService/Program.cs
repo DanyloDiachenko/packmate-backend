@@ -81,6 +81,12 @@ app.UseSwaggerUI();
 app.UseAuthentication();
 app.UseAuthorization();
 
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<UserDbContext>();
+    db.Database.Migrate();
+}
+
 app.MapGroup("/auth").MapAuthEndpoints();
 
 app.Run();
