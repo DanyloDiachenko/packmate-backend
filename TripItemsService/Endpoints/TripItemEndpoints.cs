@@ -10,6 +10,8 @@ public static class TripItemEndpoints
 {
     public static RouteGroupBuilder MapTripItemEndpoints(this RouteGroupBuilder group)
     {
+        group.WithTags("Trip Items");
+
         group.MapGet("/{tripId:guid}", async (
             Guid tripId,
             TripItemsDbContext db
@@ -37,7 +39,12 @@ public static class TripItemEndpoints
                 .ToList();
 
             return Results.Ok(grouped);
-        });
+        })
+        .WithName("GetTripItems")
+        .WithSummary("Get grouped packing items for a trip")
+        .WithDescription("Retrieves all packing items associated with a given trip ID, grouped by section.")
+        .Produces<List<TripSectionGroupResponse>>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status401Unauthorized);
 
         group.MapPost("/{tripId:guid}", async (
             Guid tripId,
@@ -77,7 +84,13 @@ public static class TripItemEndpoints
             );
 
             return Results.Created($"/trip-items/{item.Id}", response);
-        });
+        })
+        .WithName("CreateTripItem")
+        .WithSummary("Add a packing item to a trip")
+        .WithDescription("Adds a new packing item with section, title, and quantity to the specified trip.")
+        .Produces<TripItemResponse>(StatusCodes.Status201Created)
+        .ProducesValidationProblem()
+        .ProducesProblem(StatusCodes.Status401Unauthorized);
 
         group.MapPost("/{tripId:guid}/bulk", async (
             Guid tripId,
@@ -87,7 +100,7 @@ public static class TripItemEndpoints
         {
             if (request.Items == null || request.Items.Count == 0)
             {
-                return Results.BadRequest(new { message = "Items list cannot be empty" });
+                return Results.BadRequest(new ErrorResponse("Items list cannot be empty"));
             }
 
             var newItems = request.Items.Select(req => new TripItem
@@ -115,7 +128,13 @@ public static class TripItemEndpoints
             )).ToList();
 
             return Results.Ok(response);
-        });
+        })
+        .WithName("BulkCreateTripItems")
+        .WithSummary("Bulk add items to a trip")
+        .WithDescription("Adds multiple packing items to the specified trip in a single request.")
+        .Produces<List<TripItemResponse>>(StatusCodes.Status200OK)
+        .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+        .ProducesProblem(StatusCodes.Status401Unauthorized);
 
         group.MapPatch("/{id:guid}", async (
             Guid id,
@@ -133,7 +152,7 @@ public static class TripItemEndpoints
             var item = await db.TripItems.FindAsync(id);
             if (item == null)
             {
-                return Results.NotFound(new { message = "Trip item not found" });
+                return Results.NotFound(new ErrorResponse("Trip item not found"));
             }
 
             if (!string.IsNullOrWhiteSpace(request.Section)) item.Section = request.Section.ToLower().Trim();
@@ -153,7 +172,14 @@ public static class TripItemEndpoints
                 item.IsTaken,
                 item.Tag
             ));
-        });
+        })
+        .WithName("UpdateTripItem")
+        .WithSummary("Update a trip packing item")
+        .WithDescription("Updates fields such as title, section, quantity, packed status, or tag for a specific trip item.")
+        .Produces<TripItemResponse>(StatusCodes.Status200OK)
+        .ProducesValidationProblem()
+        .ProducesProblem(StatusCodes.Status401Unauthorized)
+        .Produces<ErrorResponse>(StatusCodes.Status404NotFound);
 
         group.MapDelete("/{id:guid}", async (
             Guid id,
@@ -163,14 +189,20 @@ public static class TripItemEndpoints
             var item = await db.TripItems.FindAsync(id);
             if (item == null)
             {
-                return Results.NotFound(new { message = "Trip item not found" });
+                return Results.NotFound(new ErrorResponse("Trip item not found"));
             }
 
             db.TripItems.Remove(item);
             await db.SaveChangesAsync();
 
             return Results.NoContent();
-        });
+        })
+        .WithName("DeleteTripItem")
+        .WithSummary("Delete a packing item")
+        .WithDescription("Removes a packing item from the trip list.")
+        .Produces(StatusCodes.Status204NoContent)
+        .ProducesProblem(StatusCodes.Status401Unauthorized)
+        .Produces<ErrorResponse>(StatusCodes.Status404NotFound);
 
         return group;
     }

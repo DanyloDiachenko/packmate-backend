@@ -8,6 +8,8 @@ public static class AIEndpoints
 {
     public static RouteGroupBuilder MapAIEndpoints(this RouteGroupBuilder group)
     {
+        group.WithTags("AI Recommendations");
+
         group.MapPost("/recommendations", async (
             GenerateRecommendationsRequest request,
             IValidator<GenerateRecommendationsRequest> validator,
@@ -34,8 +36,13 @@ public static class AIEndpoints
                     title: "AI Generation Error"
                 );
             }
-        });
-
+        })
+        .WithName("GenerateRecommendations")
+        .WithSummary("Generate packing recommendations using LLM")
+        .WithDescription("Generates categorized packing recommendations and tips based on destination, trip duration, trip type, season, weather conditions, and existing items.")
+        .Produces<AIRecommendationResponse>(StatusCodes.Status200OK)
+        .ProducesValidationProblem()
+        .ProducesProblem(StatusCodes.Status502BadGateway);
 
         return group;
     }

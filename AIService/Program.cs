@@ -1,3 +1,5 @@
+using System.Reflection;
+using Microsoft.OpenApi;
 using FluentValidation;
 using AIService.Endpoints;
 using AIService.Services;
@@ -14,15 +16,27 @@ builder.Services.AddHttpClient<IAIService, LlmPackingService>(client =>
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "Packmate AI Service API",
+        Version = "v1",
+        Description = "AI-powered packing recommendation service for Packmate."
+    });
+
+    var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
+    var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
+    if (File.Exists(xmlPath))
+    {
+        options.IncludeXmlComments(xmlPath);
+    }
+});
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+app.UseSwagger();
+app.UseSwaggerUI();
 
 app.MapGroup("/ai").MapAIEndpoints();
 

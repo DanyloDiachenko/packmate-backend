@@ -17,6 +17,8 @@ public static class AuthEndpoints
 {
     public static RouteGroupBuilder MapAuthEndpoints(this RouteGroupBuilder group)
     {
+        group.WithTags("Authentication");
+
         group.MapPost("/sign-up", async (
             SignUpRequest request,
             IValidator<SignUpRequest> validator,
@@ -33,7 +35,7 @@ public static class AuthEndpoints
             var emailExists = await db.Users.AnyAsync(u => u.Email == request.Email);
             if (emailExists)
             {
-                return Results.Conflict(new { message = "Email already exists" });
+                return Results.Conflict(new ErrorResponse("Email already exists"));
             }
 
             var newUser = new User
@@ -48,7 +50,13 @@ public static class AuthEndpoints
 
             var token = tokenService.GenerateToken(newUser);
             return Results.Ok(new AuthResponse(token, newUser.Id, newUser.Email));
-        });
+        })
+        .WithName("SignUp")
+        .WithSummary("Register a new user account")
+        .WithDescription("Creates a new user account with hashed password and returns an authentication JWT token.")
+        .Produces<AuthResponse>(StatusCodes.Status200OK)
+        .ProducesValidationProblem()
+        .Produces<ErrorResponse>(StatusCodes.Status409Conflict);
 
         group.MapPost("/sign-in", async
         (
@@ -72,7 +80,13 @@ public static class AuthEndpoints
 
             var token = tokenService.GenerateToken(user);
             return Results.Ok(new AuthResponse(token, user.Id, user.Email));
-        });
+        })
+        .WithName("SignIn")
+        .WithSummary("Authenticate user with credentials")
+        .WithDescription("Validates user credentials and returns an authentication JWT token on success.")
+        .Produces<AuthResponse>(StatusCodes.Status200OK)
+        .ProducesValidationProblem()
+        .ProducesProblem(StatusCodes.Status401Unauthorized);
 
         group.MapPost("/profile", async (
             UserDbContext db,
@@ -88,7 +102,13 @@ public static class AuthEndpoints
             }
 
             return Results.Ok(new UserProfileResponse(user.Id, user.Email, user.CreatedAt));
-        });
+        })
+        .RequireAuthorization()
+        .WithName("GetUserProfile")
+        .WithSummary("Get authenticated user profile")
+        .WithDescription("Retrieves profile information for the user identified by the Bearer JWT token.")
+        .Produces<UserProfileResponse>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status401Unauthorized);
 
         return group;
     }

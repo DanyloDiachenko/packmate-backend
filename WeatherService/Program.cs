@@ -1,3 +1,5 @@
+using System.Reflection;
+using Microsoft.OpenApi;
 using WeatherService.Endpoints;
 using WeatherService.Services;
 
@@ -24,15 +26,27 @@ builder.Services.AddScoped<IWeatherProviderService>(sp =>
 });
 
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "Packmate Weather Service API",
+        Version = "v1",
+        Description = "Weather forecast and climate condition service for Packmate."
+    });
+
+    var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
+    var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
+    if (File.Exists(xmlPath))
+    {
+        options.IncludeXmlComments(xmlPath);
+    }
+});
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+app.UseSwagger();
+app.UseSwaggerUI();
 app.MapGroup("/weather").MapWeatherEndpoints();
 
 app.Run();
