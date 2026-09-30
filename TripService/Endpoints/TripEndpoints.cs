@@ -1,15 +1,11 @@
-
-
 using TripService.Data;
 using System.Security.Claims;
 using FluentValidation;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using TripService.Extensions;
 using TripService.DTOs;
 using TripService.Entities;
-using TripService.Validators;
+using TripService.Clients;
 
 namespace TripService.Endpoints;
 
@@ -166,6 +162,67 @@ public static class TripEndpoints
 
             return Results.NoContent();
         });
+
+        group.MapPost("/{id:guid}/ai-recommendations", async (
+            Guid id,
+            ClaimsPrincipal userClaims,
+            TripDbContext db,
+            IHttpClientFactory httpFactory,
+            CancellationToken ct
+        ) =>
+        {
+            var userId = userClaims.GetUserId();
+
+            var trip = await db.Trips.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id && t.UserId == userId);
+            if (trip == null)
+            {
+                return Results.NotFound(new { message = "Trip not found" });
+            }
+
+            var tripDays = Math.Max(1, trip.ReturnDate.DayNumber - trip.DepartDate.DayNumber + 1);
+
+            var weatherClient = httpFactory.CreateClient("WeatherService");
+            WeatherDto? weather = null;
+            try
+            {
+                var weatherUrl = $"/weather?city={Uri.EscapeDataString(trip.Destination.City)}&country={Uri.EscapeDataString(trip.Destination.Country)}&departDate={trip.DepartDate:yyyy-MM-dd}";
+                weather = await weatherClient.GetFromJsonAsync<WeatherDto>(weatherUrl, ct);
+            }
+            catch
+            {
+            }
+            var itemsClient = httpFactory.CreateClient("TripItemsService");
+            var existingItemLabels = new List<string>();
+            try
+            {
+                var itemsResponse = await itemsClient.GetFromJsonAsync<List<TripSectionGroupDto>>($"/trip-items/{trip.Id}", ct);
+                if (itemsResponse != null)
+                {
+                    existingItemLabels = itemsResponse.SelectMany(s => s.Items).Select(i => i.Label).ToList();
+                }
+            }
+            catch
+            {
+            }
+            var aiClient = httpFactory.CreateClient("AIService");
+            var aiRequest = new AiRecommendationRequestDto(
+                City: trip.Destination.City,
+                Country: trip.Destination.Country,
+                TripDays: tripDays,
+                TripType: trip.TripType,
+                WeatherSummary: weather?.ConditionDescription ?? weather?.WeatherToday,
+                CurrentSeason: weather?.CurrentSeason ?? trip.Destination.CurrentSeason,
+                ExistingItems: existingItemLabels
+            );
+            var aiResponse = await aiClient.PostAsJsonAsync("/ai/recommendations", aiRequest, ct);
+            if (!aiResponse.IsSuccessStatusCode)
+            {
+                return Results.Problem(statusCode: StatusCodes.Status502BadGateway, detail: "AI Service is temporarily unavailable");
+            }
+            var recommendations = await aiResponse.Content.ReadFromJsonAsync<AiRecommendationResponseDto>(cancellationToken: ct);
+            return Results.Ok(recommendations);
+        });
+
 
         return group;
     }

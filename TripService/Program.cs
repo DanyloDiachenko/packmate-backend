@@ -34,6 +34,22 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
+builder.Services.AddHttpClient("WeatherService", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Services:WeatherService"] ?? "http://weather-service:8080");
+});
+
+builder.Services.AddHttpClient("TripItemsService", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Services:TripItemsService"] ?? "http://trip-items-service:8080");
+});
+
+builder.Services.AddHttpClient("AIService", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Services:AIService"] ?? "http://ai-service:8080");
+    client.Timeout = TimeSpan.FromSeconds(35);
+});
+
 builder.Services.AddAuthorization();
 
 var app = builder.Build();
