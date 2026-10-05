@@ -21,8 +21,11 @@ public class CreateTripValidator : AbstractValidator<CreateTripRequest>
         .GreaterThanOrEqualTo(x => x.DepartDate)
         .WithMessage("Return date must be greater than or equal to depart date");
 
-        RuleFor(x => x.TripType)
-        .NotEmpty().WithMessage("Trip type is required").MaximumLength(50);
+        RuleFor(x => x.Tags)
+        .NotNull().WithMessage("Tags are required");
+
+        RuleForEach(x => x.Tags)
+        .MaximumLength(50).WithMessage("Each tag cannot exceed 50 characters");
     }
 }
 
@@ -30,11 +33,17 @@ public class UpdateTripValidator : AbstractValidator<UpdateTripRequest>
 {
     public UpdateTripValidator()
     {
-        When(x => x.DepartDate != null && x.ReturnDate != null, () =>
+        When(x => x.DepartDate != default && x.ReturnDate != default, () =>
         {
             RuleFor(x => x.ReturnDate)
                 .GreaterThanOrEqualTo(x => x.DepartDate)
                 .WithMessage("Return date cannot be earlier than departure date");
+        });
+
+        When(x => x.Tags != null, () =>
+        {
+            RuleForEach(x => x.Tags!)
+                .MaximumLength(50).WithMessage("Each tag cannot exceed 50 characters");
         });
     }
 }

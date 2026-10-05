@@ -31,6 +31,7 @@ public record TripSectionGroupDto(string Section, List<TripItemSummaryDto> Items
 /// <param name="WeatherSummary">Weather overview.</param>
 /// <param name="CurrentSeason">Season.</param>
 /// <param name="ExistingItems">List of item labels already on packing list.</param>
+/// <param name="Tags">Optional list of trip tags.</param>
 public record AiRecommendationRequestDto(
     string City,
     string Country,
@@ -38,7 +39,8 @@ public record AiRecommendationRequestDto(
     string TripType,
     string WeatherSummary,
     string CurrentSeason,
-    List<string>? ExistingItems
+    List<string>? ExistingItems,
+    List<string>? Tags = null
 );
 
 /// <summary>

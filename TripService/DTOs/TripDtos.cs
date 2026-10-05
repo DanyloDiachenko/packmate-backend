@@ -1,4 +1,5 @@
 using System;
+using System.Text.Json.Serialization;
 using TripService.Entities;
 
 namespace TripService.DTOs;
@@ -9,12 +10,12 @@ namespace TripService.DTOs;
 /// <param name="Destination">Trip destination information including city and country.</param>
 /// <param name="DepartDate">Departure date in YYYY-MM-DD format.</param>
 /// <param name="ReturnDate">Return date in YYYY-MM-DD format.</param>
-/// <param name="TripType">Type of trip (e.g. leisure, business, adventure, camping).</param>
+/// <param name="Tags">Array of tags or categories for the trip (e.g. leisure, beach, skiing).</param>
 public record CreateTripRequest(
     Destination Destination,
     DateOnly DepartDate,
     DateOnly ReturnDate,
-    string TripType
+    List<string> Tags
 );
 
 /// <summary>
@@ -23,12 +24,12 @@ public record CreateTripRequest(
 /// <param name="Destination">Optional updated destination information.</param>
 /// <param name="DepartDate">Optional updated departure date in YYYY-MM-DD format.</param>
 /// <param name="ReturnDate">Optional updated return date in YYYY-MM-DD format.</param>
-/// <param name="TripType">Optional updated type of trip.</param>
+/// <param name="Tags">Optional updated array of tags for the trip.</param>
 public record UpdateTripRequest(
     Destination Destination,
     DateOnly DepartDate,
     DateOnly ReturnDate,
-    string TripType
+    List<string>? Tags
 );
 
 /// <summary>
@@ -39,7 +40,7 @@ public record UpdateTripRequest(
 /// <param name="Destination">Destination details.</param>
 /// <param name="DepartDate">Departure date.</param>
 /// <param name="ReturnDate">Return date.</param>
-/// <param name="TripType">Trip type classification.</param>
+/// <param name="Tags">Array of tags associated with the trip.</param>
 /// <param name="CreatedAt">Timestamp when trip was created in UTC.</param>
 public record TripResponse(
     Guid Id,
@@ -47,8 +48,18 @@ public record TripResponse(
     Destination Destination,
     DateOnly DepartDate,
     DateOnly ReturnDate,
-    string TripType,
+    List<string> Tags,
     DateTime CreatedAt
+);
+
+/// <summary>
+/// Paginated trips response containing the total count and the list of trips.
+/// </summary>
+/// <param name="TotalItems">Total count of trips belonging to the authenticated user.</param>
+/// <param name="Trips">List of trips for the current page.</param>
+public record PaginatedTripsResponse(
+    [property: JsonPropertyName("totalItems")] int TotalItems,
+    [property: JsonPropertyName("trips")] IReadOnlyList<TripResponse> Trips
 );
 
 /// <summary>

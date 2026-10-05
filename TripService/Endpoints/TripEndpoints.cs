@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Mvc;
 using TripService.Data;
 using System.Security.Claims;
 using FluentValidation;
@@ -16,32 +17,56 @@ public static class TripEndpoints
         group.WithTags("Trips");
 
         group.MapGet("/", async (
+            [FromQuery] int? limit,
+            [FromQuery] int? page,
+            [FromQuery] int? offset,
             ClaimsPrincipal userClaims,
             TripDbContext db
         ) =>
         {
             var userId = userClaims.GetUserId();
-            var trips = await db.Trips
+            var baseQuery = db.Trips
                 .AsNoTracking()
-                .Where(t => t.UserId == userId)
-                .OrderBy(t => t.DepartDate)
+                .Where(t => t.UserId == userId);
+
+            var totalItems = await baseQuery.CountAsync();
+
+            IQueryable<Trip> query = baseQuery.OrderBy(t => t.DepartDate);
+
+            var effectiveLimit = limit is > 0 ? limit.Value : (page is > 1 ? 20 : (int?)null);
+
+            if (offset is > 0)
+            {
+                query = query.Skip(offset.Value);
+            }
+            else if (page is > 1 && effectiveLimit.HasValue)
+            {
+                query = query.Skip((page.Value - 1) * effectiveLimit.Value);
+            }
+
+            if (effectiveLimit.HasValue)
+            {
+                query = query.Take(effectiveLimit.Value);
+            }
+
+            var trips = await query
                 .Select(t => new TripResponse(
                     t.Id,
                     t.UserId,
                     t.Destination,
                     t.DepartDate,
                     t.ReturnDate,
-                    t.TripType,
+                    t.Tags,
                     t.CreatedAt
                 ))
                 .ToListAsync();
 
-            return Results.Ok(trips);
+            return Results.Ok(new PaginatedTripsResponse(totalItems, trips));
         })
         .WithName("GetUserTrips")
-        .WithSummary("List all trips for the authenticated user")
-        .WithDescription("Returns a list of all trips created by the authenticated user, ordered by departure date.")
-        .Produces<List<TripResponse>>(StatusCodes.Status200OK)
+        .WithSummary("List all trips for the authenticated user with pagination")
+        .WithDescription("Returns a paginated response containing total trip count and list of trips created by the authenticated user, ordered by departure date. Supports limit, page, and offset query parameters.")
+        .Produces<PaginatedTripsResponse>(StatusCodes.Status200OK)
         .ProducesProblem(StatusCodes.Status401Unauthorized);
 
         group.MapGet("/{id:guid}", async (
@@ -66,7 +91,7 @@ public static class TripEndpoints
                 trip.Destination,
                 trip.DepartDate,
                 trip.ReturnDate,
-                trip.TripType,
+                trip.Tags,
                 trip.CreatedAt
             ));
         })
@@ -98,7 +123,7 @@ public static class TripEndpoints
                 Destination = request.Destination,
                 DepartDate = request.DepartDate,
                 ReturnDate = request.ReturnDate,
-                TripType = request.TripType,
+                Tags = request.Tags ?? new List<string>(),
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -111,7 +136,7 @@ public static class TripEndpoints
                 trip.Destination,
                 trip.DepartDate,
                 trip.ReturnDate,
-                trip.TripType,
+                trip.Tags,
                 trip.CreatedAt
             );
             return Results.Created($"/trips/{trip.Id}", response);
@@ -148,7 +173,7 @@ public static class TripEndpoints
             if (request.Destination != null) trip.Destination = request.Destination;
             if (request.DepartDate != default) trip.DepartDate = request.DepartDate;
             if (request.ReturnDate != default) trip.ReturnDate = request.ReturnDate;
-            if (!string.IsNullOrWhiteSpace(request.TripType)) trip.TripType = request.TripType;
+            if (request.Tags != null) trip.Tags = request.Tags;
             await db.SaveChangesAsync();
             return Results.Ok(new TripResponse(
                 trip.Id,
@@ -156,13 +181,13 @@ public static class TripEndpoints
                 trip.Destination,
                 trip.DepartDate,
                 trip.ReturnDate,
-                trip.TripType,
+                trip.Tags,
                 trip.CreatedAt
             ));
         })
         .WithName("UpdateTrip")
         .WithSummary("Partially update an existing trip")
-        .WithDescription("Updates destination, dates, or trip type for an existing trip belonging to the authenticated user.")
+        .WithDescription("Updates destination, dates, or tags for an existing trip belonging to the authenticated user.")
         .Produces<TripResponse>(StatusCodes.Status200OK)
         .ProducesValidationProblem()
         .ProducesProblem(StatusCodes.Status401Unauthorized)
@@ -240,7 +265,7 @@ public static class TripEndpoints
                 City: trip.Destination.City,
                 Country: trip.Destination.Country,
                 TripDays: tripDays,
-                TripType: trip.TripType,
+                TripType: trip.Tags != null && trip.Tags.Count > 0 ? string.Join(", ", trip.Tags) : "general",
                 WeatherSummary: weather?.ConditionDescription ?? weather?.WeatherToday ?? "Mild",
                 CurrentSeason: weather?.CurrentSeason ?? trip.Destination.CurrentSeason ?? "Summer",
                 ExistingItems: existingItemLabels

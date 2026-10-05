@@ -21,7 +21,7 @@ public class TripDbContext : DbContext
             entity.Property(t => t.Id).IsRequired();
             entity.HasIndex(t => t.UserId);
 
-            entity.Property(t => t.TripType).HasMaxLength(50).IsRequired();
+            entity.Property(t => t.Tags).IsRequired();
             entity.Property(t => t.DepartDate).IsRequired();
             entity.Property(t => t.ReturnDate).IsRequired();
 
