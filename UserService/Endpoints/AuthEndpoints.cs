@@ -40,6 +40,8 @@ public static class AuthEndpoints
 
             var newUser = new User
             {
+                FirstName = request.FirstName.Trim(),
+                LastName = request.LastName.Trim(),
                 Email = request.Email,
                 PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.Password),
                 CreatedAt = DateTime.UtcNow
@@ -101,7 +103,7 @@ public static class AuthEndpoints
                 return Results.Unauthorized();
             }
 
-            return Results.Ok(new UserProfileResponse(user.Id, user.Email, user.CreatedAt));
+            return Results.Ok(new UserProfileResponse(user.Id, user.FirstName, user.LastName, user.Email, user.CreatedAt));
         })
         .RequireAuthorization()
         .WithName("GetUserProfile")

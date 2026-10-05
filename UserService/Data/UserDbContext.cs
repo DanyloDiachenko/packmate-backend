@@ -17,6 +17,8 @@ public class UserDbContext : DbContext
         {
             entity.ToTable("users");
             entity.HasKey(u => u.Id);
+            entity.Property(u => u.FirstName).IsRequired().HasMaxLength(100);
+            entity.Property(u => u.LastName).IsRequired().HasMaxLength(100);
             entity.Property(u => u.Email).IsRequired().HasMaxLength(256);
             entity.HasIndex(u => u.Email).IsUnique();
             entity.Property(u => u.PasswordHash).IsRequired();
