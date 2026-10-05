@@ -27,16 +27,18 @@ public record GenerateRecommendationsRequest(
 /// <summary>
 /// Recommended item suggested by AI.
 /// </summary>
-/// <param name="Section">Category section (e.g. Clothes, Documents, Toiletries, Tech).</param>
-/// <param name="Title">Name or title of recommended item.</param>
+/// <param name="Section">Category section. One of: <c>clothes</c>, <c>electro</c>, <c>documents</c>, <c>toiletries</c>, <c>tools</c>.</param>
+/// <param name="Title">Name or title of the recommended item.</param>
 /// <param name="Quantity">Recommended quantity.</param>
-/// <param name="Tag">Descriptive tag (e.g. Essential, Weather, Activity).</param>
-/// <param name="Reason">Reasoning for recommending this item.</param>
+/// <param name="Tag">Priority tag. One of: <c>essential</c>, <c>important</c>, <c>safety</c>, <c>optional</c>.</param>
+/// <param name="IconEmoji">Single Unicode emoji representing the item (e.g. 🔌, ☂️, 🧴).</param>
+/// <param name="Reason">Concise reason for this recommendation, specific to destination/weather/activity.</param>
 public record RecommendationItemDto(
     string Section,
     string Title,
     int Quantity,
     string? Tag,
+    string? IconEmoji,
     string? Reason
 );
 
