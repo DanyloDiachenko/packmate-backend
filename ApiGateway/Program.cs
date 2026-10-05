@@ -22,6 +22,7 @@ app.UseSwaggerUI(c =>
     c.SwaggerEndpoint("/trip-items-service/swagger/v1/swagger.json", "Trip Items Service API");
     c.SwaggerEndpoint("/weather-service/swagger/v1/swagger.json", "Weather Service API");
     c.SwaggerEndpoint("/ai-service/swagger/v1/swagger.json", "AI Service API");
+    c.SwaggerEndpoint("/destination-service/swagger/v1/swagger.json", "Destination Service API");
     c.RoutePrefix = "swagger";
     c.DocumentTitle = "Packmate API Documentation";
 });
