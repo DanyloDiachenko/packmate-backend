@@ -117,6 +117,18 @@ public static class TripEndpoints
 
             var userId = userClaims.GetUserId();
 
+            var hasOverlap = await db.Trips.AnyAsync(t =>
+                t.UserId == userId &&
+                (
+                    (request.DepartDate < t.ReturnDate && request.ReturnDate > t.DepartDate) ||
+                    (request.DepartDate == request.ReturnDate && t.DepartDate == t.ReturnDate && request.DepartDate == t.DepartDate)
+                ));
+
+            if (hasOverlap)
+            {
+                return Results.BadRequest(new ErrorResponse("Trip dates overlap with an existing trip. Multiple trips cannot cover the same date range."));
+            }
+
             var trip = new Trip
             {
                 UserId = userId,
@@ -143,9 +155,10 @@ public static class TripEndpoints
         })
         .WithName("CreateTrip")
         .WithSummary("Create a new trip")
-        .WithDescription("Creates a new trip destination with departure and return dates for the authenticated user.")
+        .WithDescription("Creates a new trip destination with departure and return dates for the authenticated user, validating that dates do not overlap with existing trips.")
         .Produces<TripResponse>(StatusCodes.Status201Created)
         .ProducesValidationProblem()
+        .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
         .ProducesProblem(StatusCodes.Status401Unauthorized);
 
         group.MapPatch("/{id:guid}", async (
@@ -170,6 +183,25 @@ public static class TripEndpoints
                 return Results.NotFound(new ErrorResponse("Trip not found"));
             }
 
+            if (request.DepartDate != default || request.ReturnDate != default)
+            {
+                var targetDepart = request.DepartDate != default ? request.DepartDate : trip.DepartDate;
+                var targetReturn = request.ReturnDate != default ? request.ReturnDate : trip.ReturnDate;
+
+                var hasOverlap = await db.Trips.AnyAsync(t =>
+                    t.UserId == userId &&
+                    t.Id != id &&
+                    (
+                        (targetDepart < t.ReturnDate && targetReturn > t.DepartDate) ||
+                        (targetDepart == targetReturn && t.DepartDate == t.ReturnDate && targetDepart == t.DepartDate)
+                    ));
+
+                if (hasOverlap)
+                {
+                    return Results.BadRequest(new ErrorResponse("Trip dates overlap with an existing trip. Multiple trips cannot cover the same date range."));
+                }
+            }
+
             if (request.Destination != null) trip.Destination = request.Destination;
             if (request.DepartDate != default) trip.DepartDate = request.DepartDate;
             if (request.ReturnDate != default) trip.ReturnDate = request.ReturnDate;
@@ -187,9 +219,10 @@ public static class TripEndpoints
         })
         .WithName("UpdateTrip")
         .WithSummary("Partially update an existing trip")
-        .WithDescription("Updates destination, dates, or tags for an existing trip belonging to the authenticated user.")
+        .WithDescription("Updates destination, dates, or tags for an existing trip belonging to the authenticated user, validating date ranges.")
         .Produces<TripResponse>(StatusCodes.Status200OK)
         .ProducesValidationProblem()
+        .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
         .ProducesProblem(StatusCodes.Status401Unauthorized)
         .Produces<ErrorResponse>(StatusCodes.Status404NotFound);
 
