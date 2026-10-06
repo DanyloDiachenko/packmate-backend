@@ -15,6 +15,8 @@ builder.Services.AddDbContext<UserDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
+builder.Services.AddDistributedMemoryCache();
+builder.Services.AddScoped<IVerificationCodeService, VerificationCodeService>();
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 
 builder.Services.AddEndpointsApiExplorer();
@@ -72,6 +74,11 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 
 builder.Services.AddAuthorization();
+
+builder.Services.AddHttpClient("MailService", client => {
+    client.BaseAddress = new Uri(builder.Configuration["Services:MailService"] ?? "http://mail-service:8080");
+    client.Timeout = TimeSpan.FromSeconds(15);
+});
 
 var app = builder.Build();
 
