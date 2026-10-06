@@ -38,11 +38,14 @@ public class GmailEmailService : IEmailService
         message.Subject = subject;
         var bodyBuilder = new BodyBuilder { HtmlBody = htmlBody };
         message.Body = bodyBuilder.ToMessageBody();
+        var password = _settings.AppPassword?.Replace(" ", "").Trim() ?? string.Empty;
+        var senderEmail = _settings.SenderEmail?.Trim() ?? string.Empty;
+
         using var client = new SmtpClient();
         try
         {
             await client.ConnectAsync(_settings.SmtpHost, _settings.SmtpPort, SecureSocketOptions.StartTls, ct);
-            await client.AuthenticateAsync(_settings.SenderEmail, _settings.AppPassword, ct);
+            await client.AuthenticateAsync(senderEmail, password, ct);
             await client.SendAsync(message, ct);
             await client.DisconnectAsync(true, ct);
             _logger.LogInformation("Sent {Type} email code to {Email}", request.Type, request.To);
