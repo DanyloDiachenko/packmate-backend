@@ -35,6 +35,13 @@ public record AuthResponse(string Token, Guid UserId, string Email);
 public record UserProfileResponse(Guid UserId, string FirstName, string LastName, string Email, DateTime CreatedAt);
 
 /// <summary>
+/// Request payload for updating the user profile.
+/// </summary>
+/// <param name="FirstName">User first name.</param>
+/// <param name="LastName">User last name.</param>
+public record UpdateProfileRequest(string FirstName, string LastName);
+
+/// <summary>
 /// Standard error response containing a descriptive error message.
 /// </summary>
 /// <param name="Message">Descriptive error message.</param>

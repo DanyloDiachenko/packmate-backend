@@ -303,6 +303,42 @@ public static class AuthEndpoints
         .Produces<UserProfileResponse>(StatusCodes.Status200OK)
         .ProducesProblem(StatusCodes.Status401Unauthorized);
 
+        group.MapPut("/profile", async (
+            UpdateProfileRequest request,
+            IValidator<UpdateProfileRequest> validator,
+            UserDbContext db,
+            ClaimsPrincipal userClaims,
+            CancellationToken ct
+        ) =>
+        {
+            var validationResult = await validator.ValidateAsync(request, ct);
+            if (!validationResult.IsValid)
+            {
+                return Results.ValidationProblem(validationResult.ToDictionary());
+            }
+
+            var userId = userClaims.GetUserId();
+            var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct);
+
+            if (user == null)
+            {
+                return Results.Unauthorized();
+            }
+
+            user.FirstName = request.FirstName.Trim();
+            user.LastName = request.LastName.Trim();
+            await db.SaveChangesAsync(ct);
+
+            return Results.Ok(new UserProfileResponse(user.Id, user.FirstName, user.LastName, user.Email, user.CreatedAt));
+        })
+        .RequireAuthorization()
+        .WithName("UpdateUserProfile")
+        .WithSummary("Update authenticated user profile")
+        .WithDescription("Updates the first name and last name for the user identified by the Bearer JWT token.")
+        .Produces<UserProfileResponse>(StatusCodes.Status200OK)
+        .ProducesValidationProblem()
+        .ProducesProblem(StatusCodes.Status401Unauthorized);
+
         return group;
     }
 }
