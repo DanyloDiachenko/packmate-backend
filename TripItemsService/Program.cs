@@ -69,6 +69,11 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
+builder.Services.AddHttpClient("TripService", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Services:TripService"] ?? "http://trip-service:8080");
+});
+
 builder.Services.AddAuthorization();
 
 var app = builder.Build();

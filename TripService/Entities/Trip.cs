@@ -12,6 +12,7 @@ public class Trip
     public DateOnly DepartDate { get; set; }
     public DateOnly ReturnDate { get; set; }
     public List<string> Tags { get; set; } = new();
+    public bool IsArchived { get; set; } = false;
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

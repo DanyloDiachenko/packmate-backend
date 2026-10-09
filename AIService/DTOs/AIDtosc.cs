@@ -1,7 +1,3 @@
-
-
-using System.Collections.Generic;
-
 namespace AIService.DTOs;
 
 /// <summary>

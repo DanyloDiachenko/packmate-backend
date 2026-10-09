@@ -20,16 +20,30 @@ public static class TripEndpoints
             [FromQuery] int? limit,
             [FromQuery] int? page,
             [FromQuery] int? offset,
+            [FromQuery] bool? isArchived,
             ClaimsPrincipal userClaims,
-            TripDbContext db
+            TripDbContext db,
+            CancellationToken ct
         ) =>
         {
             var userId = userClaims.GetUserId();
+            var today = DateOnly.FromDateTime(DateTime.UtcNow);
+            var cutoffDate = today.AddDays(-1);
+
+            await db.Trips
+                .Where(t => t.UserId == userId && !t.IsArchived && t.ReturnDate <= cutoffDate)
+                .ExecuteUpdateAsync(s => s.SetProperty(t => t.IsArchived, true), ct);
+
             var baseQuery = db.Trips
                 .AsNoTracking()
                 .Where(t => t.UserId == userId);
 
-            var totalItems = await baseQuery.CountAsync();
+            if (isArchived.HasValue)
+            {
+                baseQuery = baseQuery.Where(t => t.IsArchived == isArchived.Value);
+            }
+
+            var totalItems = await baseQuery.CountAsync(ct);
 
             IQueryable<Trip> query = baseQuery.OrderBy(t => t.DepartDate);
 
@@ -57,32 +71,42 @@ public static class TripEndpoints
                     t.DepartDate,
                     t.ReturnDate,
                     t.Tags,
+                    t.IsArchived,
                     t.CreatedAt
                 ))
-                .ToListAsync();
+                .ToListAsync(ct);
 
             return Results.Ok(new PaginatedTripsResponse(totalItems, trips));
         })
         .WithName("GetUserTrips")
-        .WithSummary("List all trips for the authenticated user with pagination")
-        .WithDescription("Returns a paginated response containing total trip count and list of trips created by the authenticated user, ordered by departure date. Supports limit, page, and offset query parameters.")
+        .WithSummary("List all trips for the authenticated user with pagination and optional archive filter")
+        .WithDescription("Returns a paginated response containing total trip count and list of trips created by the authenticated user, ordered by departure date. Supports limit, page, offset, and isArchived query parameters.")
         .Produces<PaginatedTripsResponse>(StatusCodes.Status200OK)
         .ProducesProblem(StatusCodes.Status401Unauthorized);
 
         group.MapGet("/{id:guid}", async (
             Guid id,
             ClaimsPrincipal userClaims,
-            TripDbContext db
+            TripDbContext db,
+            CancellationToken ct
         ) =>
         {
             var userId = userClaims.GetUserId();
+            var today = DateOnly.FromDateTime(DateTime.UtcNow);
+            var cutoffDate = today.AddDays(-1);
+
             var trip = await db.Trips
-                .AsNoTracking()
-                .FirstOrDefaultAsync(t => t.Id == id && t.UserId == userId);
+                .FirstOrDefaultAsync(t => t.Id == id && t.UserId == userId, ct);
 
             if (trip == null)
             {
                 return Results.NotFound(new ErrorResponse("Trip was not found"));
+            }
+
+            if (!trip.IsArchived && trip.ReturnDate <= cutoffDate)
+            {
+                trip.IsArchived = true;
+                await db.SaveChangesAsync(ct);
             }
 
             return Results.Ok(new TripResponse(
@@ -92,6 +116,7 @@ public static class TripEndpoints
                 trip.DepartDate,
                 trip.ReturnDate,
                 trip.Tags,
+                trip.IsArchived,
                 trip.CreatedAt
             ));
         })
@@ -136,6 +161,7 @@ public static class TripEndpoints
                 DepartDate = request.DepartDate,
                 ReturnDate = request.ReturnDate,
                 Tags = request.Tags ?? new List<string>(),
+                IsArchived = false,
                 CreatedAt = DateTime.UtcNow
             };
 
@@ -149,6 +175,7 @@ public static class TripEndpoints
                 trip.DepartDate,
                 trip.ReturnDate,
                 trip.Tags,
+                trip.IsArchived,
                 trip.CreatedAt
             );
             return Results.Created($"/trips/{trip.Id}", response);
@@ -183,6 +210,11 @@ public static class TripEndpoints
                 return Results.NotFound(new ErrorResponse("Trip not found"));
             }
 
+            if (trip.IsArchived && request.IsArchived != false)
+            {
+                return Results.BadRequest(new ErrorResponse("Archived trips cannot be edited. Please unarchive the trip first."));
+            }
+
             if (request.DepartDate != default || request.ReturnDate != default)
             {
                 var targetDepart = request.DepartDate != default ? request.DepartDate : trip.DepartDate;
@@ -206,6 +238,7 @@ public static class TripEndpoints
             if (request.DepartDate != default) trip.DepartDate = request.DepartDate;
             if (request.ReturnDate != default) trip.ReturnDate = request.ReturnDate;
             if (request.Tags != null) trip.Tags = request.Tags;
+            if (request.IsArchived.HasValue) trip.IsArchived = request.IsArchived.Value;
             await db.SaveChangesAsync();
             return Results.Ok(new TripResponse(
                 trip.Id,
@@ -214,15 +247,86 @@ public static class TripEndpoints
                 trip.DepartDate,
                 trip.ReturnDate,
                 trip.Tags,
+                trip.IsArchived,
                 trip.CreatedAt
             ));
         })
         .WithName("UpdateTrip")
         .WithSummary("Partially update an existing trip")
-        .WithDescription("Updates destination, dates, or tags for an existing trip belonging to the authenticated user, validating date ranges.")
+        .WithDescription("Updates destination, dates, tags, or archived status for an existing trip belonging to the authenticated user, validating date ranges.")
         .Produces<TripResponse>(StatusCodes.Status200OK)
         .ProducesValidationProblem()
         .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+        .ProducesProblem(StatusCodes.Status401Unauthorized)
+        .Produces<ErrorResponse>(StatusCodes.Status404NotFound);
+
+        group.MapPost("/{id:guid}/archive", async (
+            Guid id,
+            ClaimsPrincipal userClaims,
+            TripDbContext db
+        ) =>
+        {
+            var userId = userClaims.GetUserId();
+            var trip = await db.Trips.FirstOrDefaultAsync(t => t.Id == id && t.UserId == userId);
+
+            if (trip == null)
+            {
+                return Results.NotFound(new ErrorResponse("Trip not found"));
+            }
+
+            trip.IsArchived = true;
+            await db.SaveChangesAsync();
+
+            return Results.Ok(new TripResponse(
+                trip.Id,
+                trip.UserId,
+                trip.Destination,
+                trip.DepartDate,
+                trip.ReturnDate,
+                trip.Tags,
+                trip.IsArchived,
+                trip.CreatedAt
+            ));
+        })
+        .WithName("ArchiveTrip")
+        .WithSummary("Archive a trip")
+        .WithDescription("Sets isArchived to true for a specific trip belonging to the authenticated user.")
+        .Produces<TripResponse>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status401Unauthorized)
+        .Produces<ErrorResponse>(StatusCodes.Status404NotFound);
+
+        group.MapPost("/{id:guid}/unarchive", async (
+            Guid id,
+            ClaimsPrincipal userClaims,
+            TripDbContext db
+        ) =>
+        {
+            var userId = userClaims.GetUserId();
+            var trip = await db.Trips.FirstOrDefaultAsync(t => t.Id == id && t.UserId == userId);
+
+            if (trip == null)
+            {
+                return Results.NotFound(new ErrorResponse("Trip not found"));
+            }
+
+            trip.IsArchived = false;
+            await db.SaveChangesAsync();
+
+            return Results.Ok(new TripResponse(
+                trip.Id,
+                trip.UserId,
+                trip.Destination,
+                trip.DepartDate,
+                trip.ReturnDate,
+                trip.Tags,
+                trip.IsArchived,
+                trip.CreatedAt
+            ));
+        })
+        .WithName("UnarchiveTrip")
+        .WithSummary("Unarchive a trip")
+        .WithDescription("Sets isArchived to false for a specific trip belonging to the authenticated user.")
+        .Produces<TripResponse>(StatusCodes.Status200OK)
         .ProducesProblem(StatusCodes.Status401Unauthorized)
         .Produces<ErrorResponse>(StatusCodes.Status404NotFound);
 

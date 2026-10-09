@@ -24,6 +24,8 @@ public static class TripItemEndpoints
 
             var grouped = items
                 .GroupBy(i => i.Section.ToLower().Trim())
+                .OrderBy(g => g.Key.Contains("misc") || g.Key.Contains("gear") ? 1 : 0)
+                .ThenBy(g => g.Key)
                 .Select(g => new TripSectionGroupResponse(
                     Section: g.Key,
                     Items: g.Select(i => new TripItemResponse(
@@ -50,10 +52,19 @@ public static class TripItemEndpoints
             Guid tripId,
             CreateTripItemRequest request,
             IValidator<CreateTripItemRequest> validator,
-            TripItemsDbContext db
+            TripItemsDbContext db,
+            IHttpClientFactory httpClientFactory,
+            HttpContext httpContext,
+            CancellationToken ct
         ) =>
         {
-            var validationResult = await validator.ValidateAsync(request);
+            var isArchived = await CheckIfTripArchivedAsync(httpClientFactory, httpContext, tripId, ct);
+            if (isArchived)
+            {
+                return Results.BadRequest(new ErrorResponse("Cannot add items to an archived trip. Please unarchive the trip first."));
+            }
+
+            var validationResult = await validator.ValidateAsync(request, ct);
             if (!validationResult.IsValid)
             {
                 return Results.ValidationProblem(validationResult.ToDictionary());
@@ -62,7 +73,7 @@ public static class TripItemEndpoints
             var normalizedTitle = request.Title.Trim().ToLower();
             var itemExists = await db.TripItems.AnyAsync(i =>
                 i.TripId == tripId &&
-                i.Title.ToLower() == normalizedTitle);
+                i.Title.ToLower() == normalizedTitle, ct);
 
             if (itemExists)
             {
@@ -81,7 +92,7 @@ public static class TripItemEndpoints
             };
 
             db.TripItems.Add(item);
-            await db.SaveChangesAsync();
+            await db.SaveChangesAsync(ct);
 
             var response = new TripItemResponse(
                 item.Id,
@@ -97,7 +108,7 @@ public static class TripItemEndpoints
         })
         .WithName("CreateTripItem")
         .WithSummary("Add a packing item to a trip")
-        .WithDescription("Adds a new packing item with section, title, and quantity to the specified trip, validating that an item with the same name does not already exist.")
+        .WithDescription("Adds a new packing item with section, title, and quantity to the specified trip, validating that an item with the same name does not already exist and that the trip is not archived.")
         .Produces<TripItemResponse>(StatusCodes.Status201Created)
         .ProducesValidationProblem()
         .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
@@ -106,9 +117,18 @@ public static class TripItemEndpoints
         group.MapPost("/{tripId:guid}/bulk", async (
             Guid tripId,
             BulkCreateTripItemsRequest request,
-            TripItemsDbContext db
+            TripItemsDbContext db,
+            IHttpClientFactory httpClientFactory,
+            HttpContext httpContext,
+            CancellationToken ct
         ) =>
         {
+            var isArchived = await CheckIfTripArchivedAsync(httpClientFactory, httpContext, tripId, ct);
+            if (isArchived)
+            {
+                return Results.BadRequest(new ErrorResponse("Cannot add items to an archived trip. Please unarchive the trip first."));
+            }
+
             if (request.Items == null || request.Items.Count == 0)
             {
                 return Results.BadRequest(new ErrorResponse("Items list cannot be empty"));
@@ -117,7 +137,7 @@ public static class TripItemEndpoints
             var existingTitles = await db.TripItems
                 .Where(i => i.TripId == tripId)
                 .Select(i => i.Title.ToLower())
-                .ToListAsync();
+                .ToListAsync(ct);
 
             var existingSet = new HashSet<string>(existingTitles, StringComparer.OrdinalIgnoreCase);
             var seenInBatch = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -149,7 +169,7 @@ public static class TripItemEndpoints
             }).ToList();
 
             db.TripItems.AddRange(newItems);
-            await db.SaveChangesAsync();
+            await db.SaveChangesAsync(ct);
 
             var response = newItems.Select(i => new TripItemResponse(
                 i.Id,
@@ -165,7 +185,7 @@ public static class TripItemEndpoints
         })
         .WithName("BulkCreateTripItems")
         .WithSummary("Bulk add items to a trip")
-        .WithDescription("Adds multiple packing items to the specified trip in a single request, verifying no duplicates are added.")
+        .WithDescription("Adds multiple packing items to the specified trip in a single request, verifying no duplicates are added and that the trip is not archived.")
         .Produces<List<TripItemResponse>>(StatusCodes.Status200OK)
         .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
         .ProducesProblem(StatusCodes.Status401Unauthorized);
@@ -174,19 +194,28 @@ public static class TripItemEndpoints
             Guid id,
             UpdateTripItemRequest request,
             IValidator<UpdateTripItemRequest> validator,
-            TripItemsDbContext db
+            TripItemsDbContext db,
+            IHttpClientFactory httpClientFactory,
+            HttpContext httpContext,
+            CancellationToken ct
         ) =>
         {
-            var validationResult = await validator.ValidateAsync(request);
-            if (!validationResult.IsValid)
-            {
-                return Results.ValidationProblem(validationResult.ToDictionary());
-            }
-
-            var item = await db.TripItems.FindAsync(id);
+            var item = await db.TripItems.FindAsync([id], ct);
             if (item == null)
             {
                 return Results.NotFound(new ErrorResponse("Trip item not found"));
+            }
+
+            var isArchived = await CheckIfTripArchivedAsync(httpClientFactory, httpContext, item.TripId, ct);
+            if (isArchived)
+            {
+                return Results.BadRequest(new ErrorResponse("Cannot edit items in an archived trip. Please unarchive the trip first."));
+            }
+
+            var validationResult = await validator.ValidateAsync(request, ct);
+            if (!validationResult.IsValid)
+            {
+                return Results.ValidationProblem(validationResult.ToDictionary());
             }
 
             if (!string.IsNullOrWhiteSpace(request.Title))
@@ -196,7 +225,7 @@ public static class TripItemEndpoints
                 var duplicateExists = await db.TripItems.AnyAsync(i =>
                     i.TripId == item.TripId &&
                     i.Id != id &&
-                    i.Title.ToLower() == normalizedNewTitle);
+                    i.Title.ToLower() == normalizedNewTitle, ct);
 
                 if (duplicateExists)
                 {
@@ -211,7 +240,7 @@ public static class TripItemEndpoints
             if (request.IsTaken.HasValue) item.IsTaken = request.IsTaken.Value;
             if (request.Tag != null) item.Tag = request.Tag;
 
-            await db.SaveChangesAsync();
+            await db.SaveChangesAsync(ct);
 
             return Results.Ok(new TripItemResponse(
                 item.Id,
@@ -225,7 +254,7 @@ public static class TripItemEndpoints
         })
         .WithName("UpdateTripItem")
         .WithSummary("Update a trip packing item")
-        .WithDescription("Updates fields such as title, section, quantity, packed status, or tag for a specific trip item.")
+        .WithDescription("Updates fields such as title, section, quantity, packed status, or tag for a specific trip item, validating that the trip is not archived.")
         .Produces<TripItemResponse>(StatusCodes.Status200OK)
         .ProducesValidationProblem()
         .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
@@ -234,17 +263,26 @@ public static class TripItemEndpoints
 
         group.MapDelete("/{id:guid}", async (
             Guid id,
-            TripItemsDbContext db
+            TripItemsDbContext db,
+            IHttpClientFactory httpClientFactory,
+            HttpContext httpContext,
+            CancellationToken ct
         ) =>
         {
-            var item = await db.TripItems.FindAsync(id);
+            var item = await db.TripItems.FindAsync([id], ct);
             if (item == null)
             {
                 return Results.NotFound(new ErrorResponse("Trip item not found"));
             }
 
+            var isArchived = await CheckIfTripArchivedAsync(httpClientFactory, httpContext, item.TripId, ct);
+            if (isArchived)
+            {
+                return Results.BadRequest(new ErrorResponse("Cannot delete items from an archived trip. Please unarchive the trip first."));
+            }
+
             db.TripItems.Remove(item);
-            await db.SaveChangesAsync();
+            await db.SaveChangesAsync(ct);
 
             return Results.NoContent();
         })
@@ -256,5 +294,29 @@ public static class TripItemEndpoints
         .Produces<ErrorResponse>(StatusCodes.Status404NotFound);
 
         return group;
+    }
+
+    private static async Task<bool> CheckIfTripArchivedAsync(
+        IHttpClientFactory httpClientFactory,
+        HttpContext httpContext,
+        Guid tripId,
+        CancellationToken ct)
+    {
+        try
+        {
+            var client = httpClientFactory.CreateClient("TripService");
+            var authHeader = httpContext.Request.Headers.Authorization.ToString();
+            if (!string.IsNullOrEmpty(authHeader))
+            {
+                client.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", authHeader);
+            }
+
+            var trip = await client.GetFromJsonAsync<TripSummaryDto>($"/trips/{tripId}", ct);
+            return trip?.IsArchived == true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

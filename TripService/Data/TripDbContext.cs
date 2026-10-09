@@ -24,6 +24,7 @@ public class TripDbContext : DbContext
             entity.Property(t => t.Tags).IsRequired();
             entity.Property(t => t.DepartDate).IsRequired();
             entity.Property(t => t.ReturnDate).IsRequired();
+            entity.Property(t => t.IsArchived).HasDefaultValue(false);
 
             entity.OwnsOne(t => t.Destination, destBuilder =>
             {

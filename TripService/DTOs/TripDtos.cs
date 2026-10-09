@@ -25,12 +25,20 @@ public record CreateTripRequest(
 /// <param name="DepartDate">Optional updated departure date in YYYY-MM-DD format.</param>
 /// <param name="ReturnDate">Optional updated return date in YYYY-MM-DD format.</param>
 /// <param name="Tags">Optional updated array of tags for the trip.</param>
+/// <param name="IsArchived">Optional updated archive status for the trip.</param>
 public record UpdateTripRequest(
-    Destination Destination,
+    Destination? Destination,
     DateOnly DepartDate,
     DateOnly ReturnDate,
-    List<string>? Tags
+    List<string>? Tags,
+    bool? IsArchived = null
 );
+
+/// <summary>
+/// Request payload to set or toggle the archived state of a trip.
+/// </summary>
+/// <param name="IsArchived">Whether the trip is archived.</param>
+public record SetTripArchivedRequest(bool IsArchived);
 
 /// <summary>
 /// Trip details returned for created or queried trips.
@@ -41,6 +49,7 @@ public record UpdateTripRequest(
 /// <param name="DepartDate">Departure date.</param>
 /// <param name="ReturnDate">Return date.</param>
 /// <param name="Tags">Array of tags associated with the trip.</param>
+/// <param name="IsArchived">Whether the trip is archived.</param>
 /// <param name="CreatedAt">Timestamp when trip was created in UTC.</param>
 public record TripResponse(
     Guid Id,
@@ -49,6 +58,7 @@ public record TripResponse(
     DateOnly DepartDate,
     DateOnly ReturnDate,
     List<string> Tags,
+    bool IsArchived,
     DateTime CreatedAt
 );
 

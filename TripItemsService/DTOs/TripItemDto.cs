@@ -73,3 +73,11 @@ public record TripSectionGroupResponse(
 /// </summary>
 /// <param name="Message">Descriptive error message.</param>
 public record ErrorResponse(string Message);
+
+/// <summary>
+/// Minimal trip information used to check archive state from TripService.
+/// </summary>
+public record TripSummaryDto(
+    Guid Id,
+    bool IsArchived
+);
