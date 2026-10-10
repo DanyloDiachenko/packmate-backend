@@ -14,9 +14,9 @@ builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo
     {
-        Title = "Packmate Mail Service API",
+        Title = "ReadyRoam Mail Service API",
         Version = "v1",
-        Description = "Email notification and verification code service for Packmate."
+        Description = "Email notification and verification code service for ReadyRoam."
     });
 
     var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";

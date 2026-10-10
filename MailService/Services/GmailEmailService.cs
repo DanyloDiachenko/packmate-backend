@@ -14,7 +14,7 @@ public class EmailSettings
     public string SmtpHost { get; set; } = "smtp.gmail.com";
     public int SmtpPort { get; set; } = 587;
     public string SenderEmail { get; set; } = string.Empty;
-    public string SenderName { get; set; } = "Packmate Travel";
+    public string SenderName { get; set; } = "ReadyRoam Travel";
     public string AppPassword { get; set; } = string.Empty;
 }
 
@@ -62,16 +62,16 @@ public class GmailEmailService : IEmailService
         return req.Type switch
         {
             EmailTemplateType.RegisterVerification => (
-                "Packmate — Verify Your Email Address",
+                "ReadyRoam — Verify Your Email Address",
                 BuildTemplate(
-                    title: "Welcome to Packmate!",
+                    title: "Welcome to ReadyRoam!",
                     intro: "Thank you for joining. Use this code to verify your email and complete your registration:",
                     code: req.Code,
-                    footer: "Valid for 10 minutes. If you did not sign up for Packmate, ignore this email."
+                    footer: "Valid for 10 minutes. If you did not sign up for ReadyRoam, ignore this email."
                 )
             ),
             EmailTemplateType.Login2FA => (
-                "Packmate — Your Security Login Code",
+                "ReadyRoam — Your Security Login Code",
                 BuildTemplate(
                     title: "Two-Factor Verification",
                     intro: "A sign-in attempt was detected. Enter this 6-digit code to complete your login:",
@@ -80,15 +80,15 @@ public class GmailEmailService : IEmailService
                 )
             ),
             EmailTemplateType.PasswordReset => (
-                "Packmate — Password Reset Request",
+                "ReadyRoam — Password Reset Request",
                 BuildTemplate(
                     title: "Reset Your Password",
-                    intro: "We received a request to reset your Packmate account password. Use this code to continue:",
+                    intro: "We received a request to reset your ReadyRoam account password. Use this code to continue:",
                     code: req.Code,
                     footer: "Valid for 15 minutes. If you didn't request a password reset, no action is needed."
                 )
             ),
-            _ => ("Packmate Verification Code", BuildTemplate("Verification Code", "Your code is:", req.Code, ""))
+            _ => ("ReadyRoam Verification Code", BuildTemplate("Verification Code", "Your code is:", req.Code, ""))
         };
     }
 
@@ -100,7 +100,7 @@ public class GmailEmailService : IEmailService
         <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f7fafc; margin: 0; padding: 40px 16px;">
           <div style="max-width: 480px; margin: 0 auto; background: #ffffff; border-radius: 12px; padding: 36px 28px; box-shadow: 0 4px 14px rgba(0,0,0,0.06); border: 1px solid #e2e8f0;">
             <div style="text-align: center; margin-bottom: 24px;">
-              <span style="font-size: 24px; font-weight: 800; color: #2b6cb0; letter-spacing: -0.5px;">Packmate</span>
+              <span style="font-size: 24px; font-weight: 800; color: #2b6cb0; letter-spacing: -0.5px;">ReadyRoam</span>
               <h2 style="color: #1a202c; margin: 16px 0 0; font-size: 20px;">{{title}}</h2>
             </div>
             <p style="color: #4a5568; font-size: 15px; line-height: 1.5; margin: 0 0 24px;">

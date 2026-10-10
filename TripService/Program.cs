@@ -20,9 +20,9 @@ builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo
     {
-        Title = "Packmate Trip Service API",
+        Title = "ReadyRoam Trip Service API",
         Version = "v1",
-        Description = "Trip management and AI recommendations service for Packmate."
+        Description = "Trip management and AI recommendations service for ReadyRoam."
     });
 
     var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";

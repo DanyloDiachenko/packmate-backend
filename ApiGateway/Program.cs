@@ -24,7 +24,7 @@ app.UseSwaggerUI(c =>
     c.SwaggerEndpoint("/ai-service/swagger/v1/swagger.json", "AI Service API");
     c.SwaggerEndpoint("/destination-service/swagger/v1/swagger.json", "Destination Service API");
     c.RoutePrefix = "swagger";
-    c.DocumentTitle = "Packmate API Documentation";
+    c.DocumentTitle = "ReadyRoam API Documentation";
 });
 
 app.MapGet("/", () => Results.Redirect("/swagger"));

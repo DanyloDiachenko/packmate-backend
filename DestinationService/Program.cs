@@ -10,7 +10,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddHttpClient<IDestinationService, DestinationServiceImpl>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(10);
-    client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("PackmateBackend", "1.0"));
+    client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("ReadyRoamBackend", "1.0"));
     client.DefaultRequestHeaders.Add("Accept", "application/json");
 });
 
@@ -22,7 +22,7 @@ if (!string.IsNullOrWhiteSpace(redisConfig))
         var configOptions = ConfigurationOptions.Parse(redisConfig);
         configOptions.AbortOnConnectFail = false;
         options.ConfigurationOptions = configOptions;
-        options.InstanceName = "Packmate_Dest_";
+        options.InstanceName = "ReadyRoam_Dest_";
     });
 }
 else
@@ -43,9 +43,9 @@ builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo
     {
-        Title = "Packmate Destination Service API",
+        Title = "ReadyRoam Destination Service API",
         Version = "v1",
-        Description = "Destination catalog, search by country/city, country flags, and scenic banner images for Packmate."
+        Description = "Destination catalog, search by country/city, country flags, and scenic banner images for ReadyRoam."
     });
 
     var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";

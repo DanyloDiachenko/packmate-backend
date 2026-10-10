@@ -5,10 +5,10 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace TripService.Migrations
 {
-    /// <inheritdoc />
+    
     public partial class ChangeTripTypeToTags : Migration
     {
-        /// <inheritdoc />
+        
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropColumn(
@@ -23,7 +23,7 @@ namespace TripService.Migrations
                 defaultValueSql: "'{}'::text[]");
         }
 
-        /// <inheritdoc />
+        
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropColumn(

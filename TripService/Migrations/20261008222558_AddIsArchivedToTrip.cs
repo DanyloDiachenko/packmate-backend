@@ -4,10 +4,10 @@
 
 namespace TripService.Migrations
 {
-    /// <inheritdoc />
+    
     public partial class AddIsArchivedToTrip : Migration
     {
-        /// <inheritdoc />
+        
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.AddColumn<bool>(
@@ -18,7 +18,7 @@ namespace TripService.Migrations
                 defaultValue: false);
         }
 
-        /// <inheritdoc />
+        
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropColumn(

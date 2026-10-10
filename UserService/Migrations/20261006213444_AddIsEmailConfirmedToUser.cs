@@ -4,10 +4,10 @@
 
 namespace UserService.Migrations
 {
-    /// <inheritdoc />
+    
     public partial class AddIsEmailConfirmedToUser : Migration
     {
-        /// <inheritdoc />
+        
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.AddColumn<bool>(
@@ -18,7 +18,7 @@ namespace UserService.Migrations
                 defaultValue: false);
         }
 
-        /// <inheritdoc />
+        
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropColumn(

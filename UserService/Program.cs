@@ -24,9 +24,9 @@ builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo
     {
-        Title = "Packmate User Service API",
+        Title = "ReadyRoam User Service API",
         Version = "v1",
-        Description = "Authentication and user management service for Packmate."
+        Description = "Authentication and user management service for ReadyRoam."
     });
 
     var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";

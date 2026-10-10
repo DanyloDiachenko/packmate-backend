@@ -13,7 +13,7 @@ builder.Services.AddHttpClient<OpenMeteoWeatherService>(client =>
 builder.Services.AddStackExchangeRedisCache(options =>
 {
     options.Configuration = builder.Configuration["Redis:Configuration"] ?? "localhost:6379";
-    options.InstanceName = "Packmate_";
+    options.InstanceName = "ReadyRoam_";
 });
 
 builder.Services.AddScoped<OpenMeteoWeatherService>();
@@ -30,9 +30,9 @@ builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo
     {
-        Title = "Packmate Weather Service API",
+        Title = "ReadyRoam Weather Service API",
         Version = "v1",
-        Description = "Weather forecast and climate condition service for Packmate."
+        Description = "Weather forecast and climate condition service for ReadyRoam."
     });
 
     var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";

@@ -1,7 +1,7 @@
 {
   "Servers": {
     "1": {
-      "Name": "Packmate PostgreSQL",
+      "Name": "ReadyRoam PostgreSQL",
       "Group": "Servers",
       "Host": "postgres",
       "Port": 5432,

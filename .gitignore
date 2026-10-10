@@ -2,3 +2,6 @@ obj/
 bin/
 .dotnet
 .local
+.env
+.env.*
+!.env.example
