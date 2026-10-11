@@ -188,6 +188,130 @@ public static class TripEndpoints
         .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
         .ProducesProblem(StatusCodes.Status401Unauthorized);
 
+        group.MapPost("/{presetId:guid}", async (
+            Guid presetId,
+            CreateTripRequest request,
+            IValidator<CreateTripRequest> validator,
+            ClaimsPrincipal userClaims,
+            TripDbContext db,
+            IHttpClientFactory httpFactory,
+            HttpContext httpContext,
+            CancellationToken ct
+        ) =>
+        {
+            var validationResult = await validator.ValidateAsync(request, ct);
+            if (!validationResult.IsValid)
+            {
+                return Results.ValidationProblem(validationResult.ToDictionary());
+            }
+
+            var userId = userClaims.GetUserId();
+
+            var hasOverlap = await db.Trips.AnyAsync(t =>
+                t.UserId == userId &&
+                (
+                    (request.DepartDate < t.ReturnDate && request.ReturnDate > t.DepartDate) ||
+                    (request.DepartDate == request.ReturnDate && t.DepartDate == t.ReturnDate && request.DepartDate == t.DepartDate)
+                ), ct);
+
+            if (hasOverlap)
+            {
+                return Results.BadRequest(new ErrorResponse("Trip dates overlap with an existing trip. Multiple trips cannot cover the same date range."));
+            }
+
+            var authHeader = httpContext.Request.Headers.Authorization.ToString();
+            var presetClient = httpFactory.CreateClient("PresetService");
+            if (!string.IsNullOrEmpty(authHeader))
+            {
+                presetClient.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", authHeader);
+            }
+
+            PresetDto? preset = null;
+            try
+            {
+                preset = await presetClient.GetFromJsonAsync<PresetDto>($"/presets/{presetId}", ct);
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                return Results.NotFound(new ErrorResponse("Selected preset was not found."));
+            }
+            catch
+            {
+                return Results.Problem(statusCode: StatusCodes.Status502BadGateway, detail: "Preset Service is temporarily unavailable.");
+            }
+
+            if (preset == null)
+            {
+                return Results.NotFound(new ErrorResponse("Selected preset was not found."));
+            }
+
+            var trip = new Trip
+            {
+                UserId = userId,
+                Destination = request.Destination,
+                DepartDate = request.DepartDate,
+                ReturnDate = request.ReturnDate,
+                Tags = request.Tags ?? new List<string>(),
+                IsArchived = false,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            db.Trips.Add(trip);
+            await db.SaveChangesAsync(ct);
+
+            if (preset.Categories != null && preset.Categories.Count > 0)
+            {
+                var itemsToInsert = preset.Categories.Values
+                    .SelectMany(items => items)
+                    .Select(i => new CreateTripItemFromPresetDto(
+                        Section: i.Section,
+                        Title: i.Title,
+                        Quantity: i.Quantity > 0 ? i.Quantity : 1,
+                        Tag: i.Tag
+                    ))
+                    .ToList();
+
+                if (itemsToInsert.Count > 0)
+                {
+                    try
+                    {
+                        var tripItemsClient = httpFactory.CreateClient("TripItemsService");
+                        if (!string.IsNullOrEmpty(authHeader))
+                        {
+                            tripItemsClient.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", authHeader);
+                        }
+
+                        await tripItemsClient.PostAsJsonAsync($"/trip-items/{trip.Id}/bulk", new BulkCreateTripItemsPayload(itemsToInsert), ct);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+
+            var response = new TripResponse(
+                trip.Id,
+                trip.UserId,
+                trip.Destination,
+                trip.DepartDate,
+                trip.ReturnDate,
+                trip.Tags,
+                trip.IsArchived,
+                trip.CreatedAt
+            );
+            return Results.Created($"/trips/{trip.Id}", response);
+        })
+        .WithName("CreateTripWithPreset")
+        .WithSummary("Create a new trip and populate packing items from a preset")
+        .WithDescription("Creates a new trip destination with dates for the authenticated user and automatically populates items from the specified packing preset.")
+        .Produces<TripResponse>(StatusCodes.Status201Created)
+        .ProducesValidationProblem()
+        .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+        .Produces<ErrorResponse>(StatusCodes.Status404NotFound)
+        .ProducesProblem(StatusCodes.Status401Unauthorized)
+        .ProducesProblem(StatusCodes.Status502BadGateway);
+
+
         group.MapPatch("/{id:guid}", async (
             Guid id,
             UpdateTripRequest request,

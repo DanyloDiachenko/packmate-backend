@@ -59,9 +59,11 @@ services:
       - Services__WeatherService=http://weather-service:8080
       - Services__TripItemsService=http://trip-items-service:8080
       - Services__AIService=http://ai-service:8080
+      - Services__PresetService=http://preset-service:8080
       - Jwt__Key=${JWT_SECRET_KEY}
       - Jwt__Issuer=${JWT_ISSUER}
       - Jwt__Audience=${JWT_AUDIENCE}
+
 
   trip-items-service:
     build:
@@ -128,6 +130,21 @@ services:
     ports:
       - "5006:8080"
 
+  preset-service:
+    build:
+      context: .
+      dockerfile: PresetService/Dockerfile
+    container_name: packmate-preset-service
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=packmate_presets_db;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      - Jwt__Key=${JWT_SECRET_KEY}
+      - Jwt__Issuer=${JWT_ISSUER}
+      - Jwt__Audience=${JWT_AUDIENCE}
+
   api-gateway:
     build:
       context: .
@@ -144,6 +161,8 @@ services:
       - ai-service
       - destination-service
       - mail-service
+      - preset-service
+
 
   pgadmin:
     image: dpage/pgadmin4:latest

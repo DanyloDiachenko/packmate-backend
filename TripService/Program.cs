@@ -85,6 +85,12 @@ builder.Services.AddHttpClient("AIService", client =>
     client.Timeout = TimeSpan.FromSeconds(35);
 });
 
+builder.Services.AddHttpClient("PresetService", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Services:PresetService"] ?? "http://preset-service:8080");
+});
+
+
 builder.Services.AddAuthorization();
 
 var app = builder.Build();

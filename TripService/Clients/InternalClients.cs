@@ -53,9 +53,12 @@ public record AiRecommendationRequestDto(
 
 public record RecommendedItemDto(string Section, string Label, int Quantity, string? Tag, string? Reason);
 
-
-
-
-
-
 public record AiRecommendationResponseDto(List<RecommendedItemDto> Recommendations, string SummaryNotes);
+
+public record PresetItemDto(string Section, string Title, int Quantity, string? Tag);
+
+public record PresetDto(Guid Id, Guid UserId, string Name, string? Description, Dictionary<string, List<PresetItemDto>> Categories);
+
+public record CreateTripItemFromPresetDto(string Section, string Title, int Quantity = 1, string? Tag = null);
+
+public record BulkCreateTripItemsPayload(List<CreateTripItemFromPresetDto> Items);
