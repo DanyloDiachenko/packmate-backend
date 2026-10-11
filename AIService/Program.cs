@@ -1,4 +1,7 @@
+using System.Text;
 using System.Reflection;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using FluentValidation;
 using AIService.Endpoints;
@@ -10,7 +13,12 @@ var baseUrl = builder.Configuration["AiSettings:BaseUrl"] ?? "https://generative
 builder.Services.AddHttpClient<IAIService, LlmPackingService>(client =>
 {
     client.BaseAddress = new Uri(baseUrl);
-    client.Timeout = TimeSpan.FromSeconds(30);
+    client.Timeout = TimeSpan.FromSeconds(60);
+});
+
+builder.Services.AddHttpClient("TripService", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Services:TripService"] ?? "http://trip-service:8080");
 });
 
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
@@ -31,12 +39,60 @@ builder.Services.AddSwaggerGen(options =>
     {
         options.IncludeXmlComments(xmlPath);
     }
+
+    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Name = "Authorization",
+        Description = "Enter JWT Bearer token format: Bearer {your token}",
+        In = ParameterLocation.Header,
+        Type = SecuritySchemeType.Http,
+        Scheme = "Bearer",
+        BearerFormat = "JWT"
+    });
+
+    options.AddSecurityRequirement(_ => new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecuritySchemeReference("Bearer"),
+            new List<string>()
+        }
+    });
 });
+
+var jwtSection = builder.Configuration.GetSection("Jwt");
+var jwtKey = jwtSection["Key"];
+if (!string.IsNullOrEmpty(jwtKey))
+{
+    var secretKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey));
+    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+        .AddJwtBearer(options =>
+        {
+            options.TokenValidationParameters = new TokenValidationParameters
+            {
+                ValidateIssuer = true,
+                ValidateAudience = true,
+                ValidateLifetime = true,
+                ValidateIssuerSigningKey = true,
+                ValidIssuer = jwtSection["Issuer"],
+                ValidAudience = jwtSection["Audience"],
+                IssuerSigningKey = secretKey
+            };
+        });
+}
+else
+{
+    builder.Services.AddAuthentication();
+}
+
+builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
 app.UseSwagger();
 app.UseSwaggerUI();
+
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapGroup("/ai").MapAIEndpoints();
 

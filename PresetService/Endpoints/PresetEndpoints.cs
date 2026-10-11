@@ -86,11 +86,21 @@ public static class PresetEndpoints
             }
 
             var userId = userClaims.GetUserId();
+            var trimmedName = request.Name.Trim();
+
+            var nameExists = await db.Presets.AnyAsync(p =>
+                p.UserId == userId &&
+                p.Name.ToLower() == trimmedName.ToLower(), ct);
+
+            if (nameExists)
+            {
+                return Results.BadRequest(new ErrorResponse($"A preset with the name '{trimmedName}' already exists."));
+            }
 
             var preset = new Preset
             {
                 UserId = userId,
-                Name = request.Name.Trim(),
+                Name = trimmedName,
                 Description = request.Description?.Trim(),
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow
@@ -150,9 +160,9 @@ public static class PresetEndpoints
             }
 
             var userId = userClaims.GetUserId();
+            var trimmedName = request.Name.Trim();
 
             var preset = await db.Presets
-                .Include(p => p.Items)
                 .FirstOrDefaultAsync(p => p.Id == id && p.UserId == userId, ct);
 
             if (preset == null)
@@ -160,7 +170,17 @@ public static class PresetEndpoints
                 return Results.NotFound(new ErrorResponse("Preset not found"));
             }
 
-            preset.Name = request.Name.Trim();
+            var nameExists = await db.Presets.AnyAsync(p =>
+                p.UserId == userId &&
+                p.Id != id &&
+                p.Name.ToLower() == trimmedName.ToLower(), ct);
+
+            if (nameExists)
+            {
+                return Results.BadRequest(new ErrorResponse($"A preset with the name '{trimmedName}' already exists."));
+            }
+
+            preset.Name = trimmedName;
             preset.Description = request.Description?.Trim();
             preset.UpdatedAt = DateTime.UtcNow;
 
@@ -172,28 +192,45 @@ public static class PresetEndpoints
                     return Results.BadRequest(new ErrorResponse("Preset cannot be empty. Please include at least one item."));
                 }
 
-                db.PresetItems.RemoveRange(preset.Items);
-                preset.Items.Clear();
+                await using var transaction = await db.Database.BeginTransactionAsync(ct);
 
+                await db.PresetItems.Where(i => i.PresetId == id).ExecuteDeleteAsync(ct);
+
+                var newItems = new List<PresetItem>();
                 foreach (var (sectionKey, dtoList) in request.Categories)
                 {
                     if (dtoList == null) continue;
                     var cleanSection = sectionKey.Trim().ToLowerInvariant();
                     foreach (var itemDto in dtoList)
                     {
-                        preset.Items.Add(new PresetItem
+                        newItems.Add(new PresetItem
                         {
+                            Id = Guid.NewGuid(),
                             PresetId = preset.Id,
                             Section = cleanSection,
                             Title = itemDto.Title.Trim(),
                             Quantity = itemDto.Quantity > 0 ? itemDto.Quantity : 1,
-                            Tag = itemDto.Tag?.Trim()
+                            Tag = itemDto.Tag?.Trim(),
+                            CreatedAt = DateTime.UtcNow
                         });
                     }
                 }
-            }
 
-            await db.SaveChangesAsync(ct);
+                await db.PresetItems.AddRangeAsync(newItems, ct);
+                preset.Items = newItems;
+
+                await db.SaveChangesAsync(ct);
+                await transaction.CommitAsync(ct);
+            }
+            else
+            {
+                preset.Items = await db.PresetItems
+                    .AsNoTracking()
+                    .Where(i => i.PresetId == id)
+                    .ToListAsync(ct);
+
+                await db.SaveChangesAsync(ct);
+            }
 
             return Results.Ok(ToPresetResponse(preset));
         })
