@@ -27,3 +27,16 @@ public class TripGeneratorRequestValidator : AbstractValidator<TripGeneratorRequ
             .MinimumLength(3).WithMessage("Message is too short");
     }
 }
+
+public class AIPackingCopilotRequestValidator : AbstractValidator<AIPackingCopilotRequest>
+{
+    public AIPackingCopilotRequestValidator()
+    {
+        RuleFor(x => x.TripId)
+            .NotEmpty().WithMessage("TripId is required");
+
+        RuleFor(x => x.Prompt)
+            .NotEmpty().WithMessage("Prompt is required")
+            .MinimumLength(3).WithMessage("Prompt is too short");
+    }
+}

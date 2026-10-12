@@ -105,6 +105,7 @@ services:
       - AiSettings__Model=${AI_MODEL}
       - AiSettings__MaxRecommendations=${AI_MAX_RECOMMENDATIONS}
       - Services__TripService=http://trip-service:8080
+      - Services__TripItemsService=http://trip-items-service:8080
       - Jwt__Key=${JWT_KEY}
       - Jwt__Issuer=${JWT_ISSUER}
       - Jwt__Audience=${JWT_AUDIENCE}

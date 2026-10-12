@@ -22,8 +22,26 @@ public static class TripItemEndpoints
                 .Where(i => i.TripId == tripId)
                 .ToListAsync();
 
+            var categoryPrimarySection = new Dictionary<string, string>();
+            foreach (var item in items)
+            {
+                var cat = GetCategoryKey(item.Section);
+                if (cat != null && !categoryPrimarySection.ContainsKey(cat))
+                {
+                    categoryPrimarySection[cat] = item.Section.ToLower().Trim();
+                }
+            }
+
             var grouped = items
-                .GroupBy(i => i.Section.ToLower().Trim())
+                .GroupBy(i =>
+                {
+                    var cat = GetCategoryKey(i.Section);
+                    if (cat != null && categoryPrimarySection.TryGetValue(cat, out var primary))
+                    {
+                        return primary;
+                    }
+                    return i.Section.ToLower().Trim();
+                })
                 .OrderBy(g => g.Key.Contains("misc") || g.Key.Contains("gear") ? 1 : 0)
                 .ThenBy(g => g.Key)
                 .Select(g => new TripSectionGroupResponse(
@@ -31,7 +49,7 @@ public static class TripItemEndpoints
                     Items: g.Select(i => new TripItemResponse(
                         i.Id,
                         i.TripId,
-                        i.Section,
+                        g.Key,
                         i.Title,
                         i.Quantity,
                         i.IsTaken,
@@ -80,10 +98,16 @@ public static class TripItemEndpoints
                 return Results.BadRequest(new ErrorResponse($"An item with the name '{request.Title.Trim()}' already exists in this trip."));
             }
 
+            var existingSections = await db.TripItems
+                .Where(i => i.TripId == tripId)
+                .Select(i => i.Section)
+                .Distinct()
+                .ToListAsync(ct);
+
             var item = new TripItem
             {
                 TripId = tripId,
-                Section = request.Section.ToLower().Trim(),
+                Section = ResolveTripSection(request.Section, existingSections),
                 Title = request.Title.Trim(),
                 Quantity = request.Quantity,
                 Tag = request.Tag,
@@ -157,16 +181,29 @@ public static class TripItemEndpoints
                 return Results.BadRequest(new ErrorResponse($"Cannot add duplicate trip items. The following items already exist or are repeated in the request: {string.Join(", ", duplicateNames.Distinct())}"));
             }
 
-            var newItems = request.Items.Select(req => new TripItem
+            var existingSections = await db.TripItems
+                .Where(i => i.TripId == tripId)
+                .Select(i => i.Section)
+                .Distinct()
+                .ToListAsync(ct);
+
+            var newItems = new List<TripItem>();
+            foreach (var req in request.Items)
             {
-                TripId = tripId,
-                Section = req.Section.ToLower().Trim(),
-                Title = req.Title.Trim(),
-                Quantity = req.Quantity > 0 ? req.Quantity : 1,
-                Tag = req.Tag,
-                IsTaken = false,
-                CreatedAt = DateTime.UtcNow
-            }).ToList();
+                var resolved = ResolveTripSection(req.Section, existingSections);
+                if (!existingSections.Contains(resolved)) existingSections.Add(resolved);
+
+                newItems.Add(new TripItem
+                {
+                    TripId = tripId,
+                    Section = resolved,
+                    Title = req.Title.Trim(),
+                    Quantity = req.Quantity > 0 ? req.Quantity : 1,
+                    Tag = req.Tag,
+                    IsTaken = false,
+                    CreatedAt = DateTime.UtcNow
+                });
+            }
 
             db.TripItems.AddRange(newItems);
             await db.SaveChangesAsync(ct);
@@ -235,7 +272,15 @@ public static class TripItemEndpoints
                 item.Title = newTitle;
             }
 
-            if (!string.IsNullOrWhiteSpace(request.Section)) item.Section = request.Section.ToLower().Trim();
+            if (!string.IsNullOrWhiteSpace(request.Section))
+            {
+                var existingSections = await db.TripItems
+                    .Where(i => i.TripId == item.TripId && i.Id != item.Id)
+                    .Select(i => i.Section)
+                    .Distinct()
+                    .ToListAsync(ct);
+                item.Section = ResolveTripSection(request.Section, existingSections);
+            }
             if (request.Quantity.HasValue) item.Quantity = request.Quantity.Value;
             if (request.IsTaken.HasValue) item.IsTaken = request.IsTaken.Value;
             if (request.Tag != null) item.Tag = request.Tag;
@@ -293,7 +338,173 @@ public static class TripItemEndpoints
         .ProducesProblem(StatusCodes.Status401Unauthorized)
         .Produces<ErrorResponse>(StatusCodes.Status404NotFound);
 
+        group.MapPost("/{tripId:guid}/sync", async (
+            Guid tripId,
+            SyncTripItemsRequest request,
+            TripItemsDbContext db,
+            IHttpClientFactory httpClientFactory,
+            HttpContext httpContext,
+            CancellationToken ct
+        ) =>
+        {
+            var isArchived = await CheckIfTripArchivedAsync(httpClientFactory, httpContext, tripId, ct);
+            if (isArchived)
+            {
+                return Results.BadRequest(new ErrorResponse("Cannot edit items in an archived trip. Please unarchive the trip first."));
+            }
+
+            if (request.ItemIdsToRemove != null && request.ItemIdsToRemove.Count > 0)
+            {
+                var itemsToRemove = await db.TripItems
+                    .Where(i => i.TripId == tripId && request.ItemIdsToRemove.Contains(i.Id))
+                    .ToListAsync(ct);
+                if (itemsToRemove.Count > 0)
+                {
+                    db.TripItems.RemoveRange(itemsToRemove);
+                }
+            }
+
+            var existingSections = await db.TripItems
+                .Where(i => i.TripId == tripId)
+                .Select(i => i.Section)
+                .Distinct()
+                .ToListAsync(ct);
+
+            if (request.ItemsToUpdate != null && request.ItemsToUpdate.Count > 0)
+            {
+                var updateMap = request.ItemsToUpdate.ToDictionary(u => u.Id);
+                var itemIds = updateMap.Keys.ToList();
+                var itemsToUpdate = await db.TripItems
+                    .Where(i => i.TripId == tripId && itemIds.Contains(i.Id))
+                    .ToListAsync(ct);
+
+                foreach (var item in itemsToUpdate)
+                {
+                    if (updateMap.TryGetValue(item.Id, out var update))
+                    {
+                        if (update.Quantity.HasValue && update.Quantity.Value > 0) item.Quantity = update.Quantity.Value;
+                        if (!string.IsNullOrWhiteSpace(update.Section))
+                        {
+                            var resolved = ResolveTripSection(update.Section, existingSections);
+                            item.Section = resolved;
+                            if (!existingSections.Contains(resolved)) existingSections.Add(resolved);
+                        }
+                        if (!string.IsNullOrWhiteSpace(update.Tag)) item.Tag = update.Tag;
+                        if (!string.IsNullOrWhiteSpace(update.Title)) item.Title = update.Title.Trim();
+                    }
+                }
+            }
+
+            if (request.ItemsToAdd != null && request.ItemsToAdd.Count > 0)
+            {
+                var existingTitles = await db.TripItems
+                    .Where(i => i.TripId == tripId)
+                    .Select(i => i.Title.ToLower())
+                    .ToListAsync(ct);
+
+                var existingSet = new HashSet<string>(existingTitles, StringComparer.OrdinalIgnoreCase);
+                var newItems = new List<TripItem>();
+
+                foreach (var toAdd in request.ItemsToAdd)
+                {
+                    var trimmedTitle = toAdd.Title.Trim();
+                    if (existingSet.Add(trimmedTitle))
+                    {
+                        var resolved = ResolveTripSection(toAdd.Section, existingSections);
+                        if (!existingSections.Contains(resolved)) existingSections.Add(resolved);
+
+                        newItems.Add(new TripItem
+                        {
+                            TripId = tripId,
+                            Section = resolved,
+                            Title = trimmedTitle,
+                            Quantity = toAdd.Quantity > 0 ? toAdd.Quantity : 1,
+                            Tag = toAdd.Tag,
+                            IsTaken = false,
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    }
+                }
+
+                if (newItems.Count > 0)
+                {
+                    db.TripItems.AddRange(newItems);
+                }
+            }
+
+            await db.SaveChangesAsync(ct);
+
+            var allItems = await db.TripItems
+                .AsNoTracking()
+                .Where(i => i.TripId == tripId)
+                .Select(i => new TripItemResponse(
+                    i.Id,
+                    i.TripId,
+                    i.Section,
+                    i.Title,
+                    i.Quantity,
+                    i.IsTaken,
+                    i.Tag
+                ))
+                .ToListAsync(ct);
+
+            return Results.Ok(allItems);
+        })
+        .WithName("SyncTripItems")
+        .WithSummary("Atomic sync of trip items")
+        .WithDescription("Applies additions, deletions, and updates to trip items in a single atomic transaction.")
+        .Produces<List<TripItemResponse>>(StatusCodes.Status200OK)
+        .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+        .ProducesProblem(StatusCodes.Status401Unauthorized);
+
         return group;
+    }
+
+    public static string? GetCategoryKey(string? section)
+    {
+        if (string.IsNullOrWhiteSpace(section)) return null;
+        var s = section.Trim().ToLowerInvariant();
+        if (s.Contains("cloth") || s.Contains("footwear") || s.Contains("wear") || s.Contains("shoe") || s.Contains("pant") || s.Contains("shirt")) return "clothes";
+        if (s.Contains("doc") || s.Contains("essent") || s.Contains("money") || s.Contains("passport") || s.Contains("wallet")) return "documents";
+        if (s.Contains("toil") || s.Contains("hygiene") || s.Contains("bath") || s.Contains("cosmetic")) return "toiletries";
+        if (s.Contains("electr") || s.Contains("tech") || s.Contains("gadget") || s.Contains("device")) return "electronics";
+        if (s.Contains("health") || s.Contains("well") || s.Contains("med") || s.Contains("first aid") || s.Contains("pharmacy")) return "health";
+        if (s.Contains("misc") || s.Contains("gear") || s.Contains("tool")) return "misc";
+        return null;
+    }
+
+    public static bool IsSameCategory(string? sectionA, string? sectionB)
+    {
+        var catA = GetCategoryKey(sectionA);
+        var catB = GetCategoryKey(sectionB);
+        return catA != null && catA == catB;
+    }
+
+    public static string ResolveTripSection(string requestedSection, IEnumerable<string>? existingSections)
+    {
+        var trimmed = requestedSection?.Trim() ?? string.Empty;
+        var existingList = existingSections?
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Select(s => s.Trim())
+            .Distinct()
+            .ToList() ?? new List<string>();
+
+        if (existingList.Count > 0)
+        {
+            var exactMatch = existingList.FirstOrDefault(s => string.Equals(s, trimmed, StringComparison.OrdinalIgnoreCase));
+            if (exactMatch != null)
+            {
+                return exactMatch.ToLowerInvariant();
+            }
+
+            var catMatch = existingList.FirstOrDefault(s => IsSameCategory(s, trimmed));
+            if (catMatch != null)
+            {
+                return catMatch.ToLowerInvariant();
+            }
+        }
+
+        return trimmed.ToLowerInvariant();
     }
 
     private static async Task<bool> CheckIfTripArchivedAsync(

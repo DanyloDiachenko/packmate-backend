@@ -10,6 +10,7 @@ public interface IAIService
 {
     Task<AIRecommendationResponse> GenerateRecommendationsAsync(GenerateRecommendationsRequest request, CancellationToken ct = default);
     Task<TripGeneratorResponse> GenerateTripAsync(TripGeneratorRequest request, List<ExistingTripDateDto>? existingTrips = null, CancellationToken ct = default);
+    Task<AIPackingCopilotResponse> GeneratePackingCopilotDiffAsync(AIPackingCopilotRequest request, CancellationToken ct = default);
 }
 
 public class LlmPackingService : IAIService
@@ -407,6 +408,7 @@ public class LlmPackingService : IAIService
                 "departDate": "2027-07-11",
                 "returnDate": "2027-07-18",
                 "durationDays": 7,
+                "tags": ["Beach", "Leisure", "City Break"],
                 "weatherSummary": "Hot and sunny Mediterranean weather, 28-32°C with warm sea temperatures",
                 "currentSeason": "Summer",
                 "items": [
@@ -552,6 +554,433 @@ public class LlmPackingService : IAIService
         }
 
         return generatorResponse;
+    }
+
+    public async Task<AIPackingCopilotResponse> GeneratePackingCopilotDiffAsync(AIPackingCopilotRequest request, CancellationToken ct = default)
+    {
+        var apiKey = _config["AiSettings:ApiKey"] ?? string.Empty;
+        var model = _config["AiSettings:Model"] ?? "gemini-3.6-flash";
+
+        var existingItems = request.ExistingItems ?? new List<CopilotExistingItemDto>();
+        var itemsJson = JsonSerializer.Serialize(existingItems.Select(i => new
+        {
+            id = i.Id,
+            title = i.Title,
+            section = i.Section,
+            quantity = i.Quantity,
+            isPacked = i.IsPacked,
+            tag = i.Tag
+        }), new JsonSerializerOptions { WriteIndented = true });
+
+        var contextDescription = new StringBuilder();
+        if (!string.IsNullOrWhiteSpace(request.Destination))
+        {
+            contextDescription.AppendLine($"- Destination: {request.Destination}");
+        }
+        if (!string.IsNullOrWhiteSpace(request.DateRange))
+        {
+            contextDescription.AppendLine($"- Travel Dates: {request.DateRange}");
+        }
+        if (request.NightsCount.HasValue)
+        {
+            contextDescription.AppendLine($"- Duration: {request.NightsCount.Value} nights");
+        }
+
+        var travelContextInfo = contextDescription.Length > 0
+            ? contextDescription.ToString().TrimEnd()
+            : "No specific destination details provided. Apply general travel logic.";
+
+        var systemPrompt = $$"""
+        You are ReadyRoam's expert AI Packing Copilot.
+        You act as an intelligent packing advisor that proposes a structured patch (Diff/Suggestions) to an EXISTING packing list, rather than regenerating a list from scratch or mutating a database.
+
+        TRAVEL CONTEXT:
+        {{travelContextInfo}}
+
+        CURRENT CHECKLIST (existingItems):
+        {{itemsJson}}
+
+        SECTION MATCHING RULES (section):
+        1. CRITICAL: Inspect the section names present in the CURRENT CHECKLIST (existingItems).
+        2. If an item belongs to a category that already has items in existingItems (e.g. clothes, toiletries, tech, documents, gear), you MUST use that EXACT section name from existingItems so items are inserted directly into the existing section rather than creating a duplicate section.
+        3. Only if a category does not exist in existingItems, use one of these 6 standard categories:
+        - "Essentials & Documents"
+        - "Clothes & Footwear"
+        - "Toiletries & Hygiene"
+        - "Electronics & Tech"
+        - "Health & Wellness"
+        - "Miscellaneous & Gear"
+
+        COPILOT DIFF RULES:
+        1. ADDITIONS ("additions"):
+           - Suggest relevant items to add for the user's prompt (e.g. hiking gear, trail snacks, weather essentials, activity items).
+           - DO NOT propose items that are already in the existingItems checklist! Perform case-insensitive deduplication against existing titles.
+           - Provide: "section", "title", "quantity" (integer >= 1), "tag" ("Essential"|"Important"|"Safety"|"Optional"), and a clear "reason" explaining why it is needed.
+
+        2. REMOVALS ("removals"):
+           - Suggest removing redundant or unnecessary items from existingItems.
+           - CRITICAL GUARDRAIL: "itemId" MUST match the exact "id" from existingItems! Do NOT invent new IDs.
+           - PACKED ITEMS GUARDRAIL: NEVER remove items where "isPacked" is true, unless the user explicitly requested removing that specific item.
+           - Provide: "itemId" (exact ID from existingItems), "title", "section", and "reason".
+
+        3. MODIFICATIONS ("modifications"):
+           - Suggest quantity or tag changes for items in existingItems (e.g. reducing t-shirts from 5 to 3 for laundry or carry-on, or updating tags).
+           - CRITICAL GUARDRAIL: "itemId" MUST match the exact "id" from existingItems!
+           - Provide: "itemId", "title", "section", "newQuantity" (integer >= 1), "newTag", and "reason".
+
+        4. NEXT ACTIONS ("nextActions"):
+           - Suggest 1 to 3 (MAXIMUM 3!) short, logical follow-up actions as first-person phrases (e.g. "Make this fit into carry-on", "Add trail snacks & electrolyte tabs", "What am I missing?", "Make it lighter", "Check blister first aid kit").
+
+        5. EXPLANATION ("explanation"):
+           - Concise 1-2 sentence explanation of proposed suggestions and rationale.
+
+        6. STRICT DOMAIN RESTRICTIONS:
+           - ReadyRoam is strictly a packing and travel preparation assistant.
+           - NO restaurant, bistro, bakery, cafe, food, or dining recommendations.
+           - NO museum ticket booking reminders, entrance reservations, or tour guides.
+           - NO flight or hotel booking alerts.
+
+        OUTPUT FORMAT: STRICTLY raw, valid JSON matching the schema below. No markdown fences (NO ```json).
+
+        JSON SCHEMA:
+        {
+          "success": true,
+          "explanation": "Added mountain trail gear and adjusted clothing quantities for outdoor activity.",
+          "additions": [
+            {
+              "section": "Clothes & Footwear",
+              "title": "Hiking Boots",
+              "quantity": 1,
+              "tag": "Essential",
+              "reason": "Supportive footwear for rugged mountain trails"
+            }
+          ],
+          "removals": [
+            {
+              "itemId": "c1a2b3d4-0000-0000-0000-000000000003",
+              "title": "Heavy Winter Coat",
+              "section": "Clothes & Footwear",
+              "reason": "Too warm and bulky for active hiking"
+            }
+          ],
+          "modifications": [
+            {
+              "itemId": "c1a2b3d4-0000-0000-0000-000000000002",
+              "title": "T-Shirts / Tops",
+              "section": "Clothes & Footwear",
+              "newQuantity": 3,
+              "newTag": "Important",
+              "reason": "Reduced quantity to save bag space"
+            }
+          ],
+          "nextActions": [
+            "Make this fit into carry-on",
+            "Add trail snacks & electrolyte tabs",
+            "Check blister first aid kit"
+          ],
+          "errorMessage": null
+        }
+        """;
+
+        var payload = new
+        {
+            system_instruction = new
+            {
+                parts = new[]
+                {
+                    new { text = systemPrompt }
+                }
+            },
+            contents = new[]
+            {
+                new
+                {
+                    role = "user",
+                    parts = new[]
+                    {
+                        new { text = request.Prompt }
+                    }
+                }
+            },
+            generationConfig = new
+            {
+                responseMimeType = "application/json",
+                temperature = 0.4
+            }
+        };
+
+        var baseUrl = _config["AiSettings:BaseUrl"]?.TrimEnd('/');
+        if (string.IsNullOrWhiteSpace(baseUrl) || baseUrl.Contains("gemini.google.com"))
+        {
+            baseUrl = "https://generativelanguage.googleapis.com/v1beta";
+        }
+
+        var endpoint = $"{baseUrl}/models/{model}:generateContent?key={apiKey}";
+
+        var requestMessage = new HttpRequestMessage(HttpMethod.Post, endpoint)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+        };
+
+        if (!string.IsNullOrWhiteSpace(apiKey))
+        {
+            requestMessage.Headers.Add("x-goog-api-key", apiKey);
+        }
+
+        var response = await _http.SendAsync(requestMessage, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogError("Gemini API request failed for Copilot with status {StatusCode}: {Error}", response.StatusCode, errorBody);
+            response.EnsureSuccessStatusCode();
+        }
+
+        var responseJson = await response.Content.ReadAsStringAsync(ct);
+        var geminiResponse = JsonSerializer.Deserialize<GeminiGenerateContentResponse>(responseJson);
+
+        var contentString = geminiResponse?.Candidates?.FirstOrDefault()?.Content?.Parts?.FirstOrDefault()?.Text;
+        if (string.IsNullOrWhiteSpace(contentString))
+        {
+            return new AIPackingCopilotResponse(false, null, new(), new(), new(), new(), "AI Service was unable to process the Copilot request.");
+        }
+
+        var cleanedJson = contentString.Trim();
+        if (cleanedJson.StartsWith("```json", StringComparison.OrdinalIgnoreCase))
+        {
+            cleanedJson = cleanedJson.Substring(7);
+        }
+        else if (cleanedJson.StartsWith("```", StringComparison.OrdinalIgnoreCase))
+        {
+            cleanedJson = cleanedJson.Substring(3);
+        }
+
+        if (cleanedJson.EndsWith("```", StringComparison.OrdinalIgnoreCase))
+        {
+            cleanedJson = cleanedJson.Substring(0, cleanedJson.Length - 3);
+        }
+
+        cleanedJson = cleanedJson.Trim();
+
+        var copilotOutput = JsonSerializer.Deserialize<GeminiCopilotDiffOutput>(cleanedJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        if (copilotOutput == null)
+        {
+            return new AIPackingCopilotResponse(false, null, new(), new(), new(), new(), "Failed to parse AI Copilot output.");
+        }
+
+        return ReconcileCopilotDiff(existingItems, copilotOutput, request.Prompt);
+    }
+
+    public static string? GetCategoryKey(string? section)
+    {
+        if (string.IsNullOrWhiteSpace(section)) return null;
+        var s = section.Trim().ToLowerInvariant();
+        if (s.Contains("cloth") || s.Contains("footwear") || s.Contains("wear") || s.Contains("shoe") || s.Contains("pant") || s.Contains("shirt")) return "clothes";
+        if (s.Contains("doc") || s.Contains("essent") || s.Contains("money") || s.Contains("passport") || s.Contains("wallet")) return "documents";
+        if (s.Contains("toil") || s.Contains("hygiene") || s.Contains("bath") || s.Contains("cosmetic")) return "toiletries";
+        if (s.Contains("electr") || s.Contains("tech") || s.Contains("gadget") || s.Contains("device")) return "electronics";
+        if (s.Contains("health") || s.Contains("well") || s.Contains("med") || s.Contains("first aid") || s.Contains("pharmacy")) return "health";
+        if (s.Contains("misc") || s.Contains("gear") || s.Contains("tool")) return "misc";
+        return null;
+    }
+
+    public static bool IsSameCategory(string? sectionA, string? sectionB)
+    {
+        var catA = GetCategoryKey(sectionA);
+        var catB = GetCategoryKey(sectionB);
+        return catA != null && catA == catB;
+    }
+
+    public static string ResolveSectionName(string? requestedSection, IEnumerable<string>? existingSections = null)
+    {
+        var trimmed = requestedSection?.Trim() ?? string.Empty;
+        var existingList = existingSections?
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Select(s => s.Trim())
+            .Distinct()
+            .ToList() ?? new List<string>();
+
+        if (existingList.Count > 0)
+        {
+            var exactMatch = existingList.FirstOrDefault(s => string.Equals(s, trimmed, StringComparison.OrdinalIgnoreCase));
+            if (exactMatch != null)
+            {
+                return exactMatch;
+            }
+
+            var catMatch = existingList.FirstOrDefault(s => IsSameCategory(s, trimmed));
+            if (catMatch != null)
+            {
+                return catMatch;
+            }
+
+            if (existingList.All(s => s == s.ToLowerInvariant()))
+            {
+                return NormalizeSectionName(trimmed).ToLowerInvariant();
+            }
+        }
+
+        return NormalizeSectionName(trimmed);
+    }
+
+    public static string NormalizeSectionName(string? section)
+    {
+        if (string.IsNullOrWhiteSpace(section)) return "Miscellaneous & Gear";
+        var s = section.Trim().ToLowerInvariant();
+        if (s.Contains("doc") || s.Contains("essent") || s.Contains("money") || s.Contains("passport") || s.Contains("wallet")) return "Essentials & Documents";
+        if (s.Contains("cloth") || s.Contains("footwear") || s.Contains("wear") || s.Contains("shoe") || s.Contains("pant") || s.Contains("shirt")) return "Clothes & Footwear";
+        if (s.Contains("toil") || s.Contains("hygiene") || s.Contains("bath") || s.Contains("cosmetic")) return "Toiletries & Hygiene";
+        if (s.Contains("electr") || s.Contains("tech") || s.Contains("gadget") || s.Contains("device")) return "Electronics & Tech";
+        if (s.Contains("health") || s.Contains("well") || s.Contains("med") || s.Contains("first aid") || s.Contains("pharmacy")) return "Health & Wellness";
+        if (s.Contains("misc") || s.Contains("gear") || s.Contains("tool")) return "Miscellaneous & Gear";
+        return section.Trim();
+    }
+
+    public static AIPackingCopilotResponse ReconcileCopilotDiff(List<CopilotExistingItemDto> existingItems, GeminiCopilotDiffOutput output, string? userPrompt)
+    {
+        if (!output.Success)
+        {
+            return new AIPackingCopilotResponse(
+                Success: false,
+                Explanation: output.Explanation,
+                Additions: new List<CopilotAdditionDto>(),
+                Removals: new List<CopilotRemovalDto>(),
+                Modifications: new List<CopilotModificationDto>(),
+                NextActions: new List<string>(),
+                ErrorMessage: output.ErrorMessage ?? "Copilot was unable to produce suggestions."
+            );
+        }
+
+        var additions = new List<CopilotAdditionDto>();
+        var removals = new List<CopilotRemovalDto>();
+        var modifications = new List<CopilotModificationDto>();
+
+        var existingTitles = new HashSet<string>(existingItems.Select(i => i.Title.Trim().ToLowerInvariant()), StringComparer.OrdinalIgnoreCase);
+        var existingById = existingItems.ToDictionary(i => i.Id);
+        var existingByTitle = existingItems.GroupBy(i => i.Title.Trim().ToLowerInvariant(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var existingSections = existingItems
+            .Select(i => i.Section)
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Select(s => s.Trim())
+            .Distinct()
+            .ToList();
+
+        var promptMentionsRemove = !string.IsNullOrWhiteSpace(userPrompt) &&
+            (userPrompt.Contains("remove", StringComparison.OrdinalIgnoreCase) ||
+             userPrompt.Contains("delete", StringComparison.OrdinalIgnoreCase) ||
+             userPrompt.Contains("packed", StringComparison.OrdinalIgnoreCase) ||
+             userPrompt.Contains("прибери", StringComparison.OrdinalIgnoreCase) ||
+             userPrompt.Contains("видали", StringComparison.OrdinalIgnoreCase));
+
+        if (output.Additions != null && output.Additions.Count > 0)
+        {
+            foreach (var toAdd in output.Additions)
+            {
+                var title = toAdd.Title?.Trim();
+                if (string.IsNullOrWhiteSpace(title)) continue;
+
+                var key = title.ToLowerInvariant();
+                if (existingTitles.Add(key))
+                {
+                    additions.Add(new CopilotAdditionDto(
+                        Id: Guid.NewGuid(),
+                        Section: ResolveSectionName(toAdd.Section, existingSections),
+                        Title: title,
+                        Quantity: toAdd.Quantity > 0 ? toAdd.Quantity : 1,
+                        Tag: !string.IsNullOrWhiteSpace(toAdd.Tag) ? toAdd.Tag : "Important",
+                        Reason: !string.IsNullOrWhiteSpace(toAdd.Reason) ? toAdd.Reason : "Recommended for your trip"
+                    ));
+                }
+            }
+        }
+
+        if (output.Removals != null && output.Removals.Count > 0)
+        {
+            var processedItemIds = new HashSet<Guid>();
+            foreach (var toRemove in output.Removals)
+            {
+                CopilotExistingItemDto? matched = null;
+                if (!string.IsNullOrWhiteSpace(toRemove.ItemId) && Guid.TryParse(toRemove.ItemId, out var parsedId))
+                {
+                    existingById.TryGetValue(parsedId, out matched);
+                }
+
+                if (matched == null && !string.IsNullOrWhiteSpace(toRemove.Title))
+                {
+                    existingByTitle.TryGetValue(toRemove.Title.Trim().ToLowerInvariant(), out matched);
+                }
+
+                if (matched == null) continue;
+                if (!processedItemIds.Add(matched.Id)) continue;
+
+                if (matched.IsPacked && !promptMentionsRemove)
+                {
+                    continue;
+                }
+
+                removals.Add(new CopilotRemovalDto(
+                    Id: Guid.NewGuid(),
+                    ItemId: matched.Id,
+                    Title: matched.Title,
+                    Section: matched.Section,
+                    Reason: !string.IsNullOrWhiteSpace(toRemove.Reason) ? toRemove.Reason : "Not needed for this trip"
+                ));
+            }
+        }
+
+        if (output.Modifications != null && output.Modifications.Count > 0)
+        {
+            var processedItemIds = new HashSet<Guid>();
+            foreach (var toMod in output.Modifications)
+            {
+                CopilotExistingItemDto? matched = null;
+                if (!string.IsNullOrWhiteSpace(toMod.ItemId) && Guid.TryParse(toMod.ItemId, out var parsedId))
+                {
+                    existingById.TryGetValue(parsedId, out matched);
+                }
+
+                if (matched == null && !string.IsNullOrWhiteSpace(toMod.Title))
+                {
+                    existingByTitle.TryGetValue(toMod.Title.Trim().ToLowerInvariant(), out matched);
+                }
+
+                if (matched == null) continue;
+                if (!processedItemIds.Add(matched.Id)) continue;
+
+                var newQty = toMod.NewQuantity > 0 ? toMod.NewQuantity : matched.Quantity;
+                var newTag = !string.IsNullOrWhiteSpace(toMod.NewTag) ? toMod.NewTag : matched.Tag;
+
+                if (newQty == matched.Quantity && string.Equals(newTag, matched.Tag, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                modifications.Add(new CopilotModificationDto(
+                    Id: Guid.NewGuid(),
+                    ItemId: matched.Id,
+                    Title: matched.Title,
+                    Section: matched.Section,
+                    CurrentQuantity: matched.Quantity,
+                    NewQuantity: newQty,
+                    NewTag: newTag,
+                    Reason: !string.IsNullOrWhiteSpace(toMod.Reason) ? toMod.Reason : "Adjusted for your trip"
+                ));
+            }
+        }
+
+        var nextActions = output.NextActions != null
+            ? output.NextActions.Where(a => !string.IsNullOrWhiteSpace(a)).Take(3).ToList()
+            : new List<string>();
+
+        return new AIPackingCopilotResponse(
+            Success: true,
+            Explanation: output.Explanation ?? "Generated packing suggestions based on your request.",
+            Additions: additions,
+            Removals: removals,
+            Modifications: modifications,
+            NextActions: nextActions,
+            ErrorMessage: null
+        );
     }
 }
 

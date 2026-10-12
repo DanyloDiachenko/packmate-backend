@@ -104,6 +104,104 @@ public static class AIEndpoints
         .ProducesValidationProblem()
         .ProducesProblem(StatusCodes.Status502BadGateway);
 
+        var handlePackingCopilot = async (
+            AIPackingCopilotRequest request,
+            IValidator<AIPackingCopilotRequest> validator,
+            IAIService aiService,
+            IHttpClientFactory httpFactory,
+            HttpContext httpContext,
+            CancellationToken ct
+        ) =>
+        {
+            var validationResult = await validator.ValidateAsync(request, ct);
+            if (!validationResult.IsValid)
+            {
+                return Results.ValidationProblem(validationResult.ToDictionary());
+            }
+
+            var authHeader = httpContext.Request.Headers.Authorization.ToString();
+            var effectiveItems = request.ExistingItems ?? new List<CopilotExistingItemDto>();
+            var destination = request.Destination;
+            var dateRange = request.DateRange;
+            var nightsCount = request.NightsCount;
+
+            if (effectiveItems.Count == 0 && !string.IsNullOrEmpty(authHeader))
+            {
+                try
+                {
+                    var itemClient = httpFactory.CreateClient("TripItemsService");
+                    itemClient.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", authHeader);
+                    var itemGroups = await itemClient.GetFromJsonAsync<List<TripSectionGroupDto>>($"/trip-items/{request.TripId}", ct);
+                    if (itemGroups != null)
+                    {
+                        effectiveItems = itemGroups
+                            .SelectMany(g => g.Items)
+                            .Select(i => new CopilotExistingItemDto(
+                                Id: i.Id,
+                                Title: i.Title,
+                                Section: i.Section,
+                                Quantity: i.Quantity,
+                                IsPacked: i.IsTaken,
+                                Tag: i.Tag
+                            ))
+                            .ToList();
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(destination) && !string.IsNullOrEmpty(authHeader))
+            {
+                try
+                {
+                    var tripClient = httpFactory.CreateClient("TripService");
+                    tripClient.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", authHeader);
+                    var trip = await tripClient.GetFromJsonAsync<TripDetailResponseDto>($"/trips/{request.TripId}", ct);
+                    if (trip != null)
+                    {
+                        destination = $"{trip.Destination?.City}, {trip.Destination?.Country}".Trim(',', ' ');
+                        dateRange ??= $"{trip.DepartDate:MMM d} – {trip.ReturnDate:MMM d}";
+                        nightsCount ??= (trip.ReturnDate.DayNumber - trip.DepartDate.DayNumber);
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            try
+            {
+                var preparedRequest = request with
+                {
+                    Destination = destination,
+                    DateRange = dateRange,
+                    NightsCount = nightsCount,
+                    ExistingItems = effectiveItems
+                };
+
+                var result = await aiService.GeneratePackingCopilotDiffAsync(preparedRequest, ct);
+                return Results.Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(
+                    detail: ex.Message,
+                    statusCode: StatusCodes.Status502BadGateway,
+                    title: "AI Generation Error"
+                );
+            }
+        };
+
+        group.MapPost("/packing-copilot", handlePackingCopilot)
+            .WithName("PackingCopilot")
+            .WithSummary("AI Packing Copilot (Suggestions & Diff advisor)")
+            .WithDescription("Analyzes current packing list and returns a structured diff patch of additions, removals, and modifications without mutating the database.")
+            .Produces<AIPackingCopilotResponse>(StatusCodes.Status200OK)
+            .ProducesValidationProblem()
+            .ProducesProblem(StatusCodes.Status502BadGateway);
+
         return group;
     }
 }

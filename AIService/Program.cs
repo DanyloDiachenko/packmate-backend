@@ -13,12 +13,17 @@ var baseUrl = builder.Configuration["AiSettings:BaseUrl"] ?? "https://generative
 builder.Services.AddHttpClient<IAIService, LlmPackingService>(client =>
 {
     client.BaseAddress = new Uri(baseUrl);
-    client.Timeout = TimeSpan.FromSeconds(60);
+    client.Timeout = TimeSpan.FromSeconds(90);
 });
 
 builder.Services.AddHttpClient("TripService", client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["Services:TripService"] ?? "http://trip-service:8080");
+});
+
+builder.Services.AddHttpClient("TripItemsService", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Services:TripItemsService"] ?? "http://trip-items-service:8080");
 });
 
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();

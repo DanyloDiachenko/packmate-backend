@@ -81,3 +81,17 @@ public record TripSummaryDto(
     Guid Id,
     bool IsArchived
 );
+
+public record SyncUpdateItemRequest(
+    Guid Id,
+    string? Section = null,
+    string? Title = null,
+    int? Quantity = null,
+    string? Tag = null
+);
+
+public record SyncTripItemsRequest(
+    List<CreateTripItemRequest>? ItemsToAdd = null,
+    List<Guid>? ItemIdsToRemove = null,
+    List<SyncUpdateItemRequest>? ItemsToUpdate = null
+);
