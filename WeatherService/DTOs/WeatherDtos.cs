@@ -45,3 +45,21 @@ public record WeatherResponse
 
 public record ErrorResponse(string Message);
 
+public record DailyForecastItemDto(
+    DateOnly Date,
+    string DayOfWeek,
+    int HighTemp,
+    int LowTemp,
+    string Condition,
+    string IconName,
+    int RainProbability,
+    int UvIndex,
+    int WindSpeed
+);
+
+public record TripDailyForecastResponse(
+    string City,
+    string Country,
+    List<DailyForecastItemDto> Forecasts
+);
+

@@ -39,6 +39,34 @@ public static class WeatherEndpoints
         .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
         .Produces<ErrorResponse>(StatusCodes.Status404NotFound);
 
+        group.MapGet("/daily", async (
+            string city,
+            string? country,
+            DateOnly? departDate,
+            DateOnly? returnDate,
+            IWeatherProviderService weatherService,
+            CancellationToken ct
+        ) =>
+        {
+            if (string.IsNullOrWhiteSpace(city))
+            {
+                return Results.BadRequest(new ErrorResponse("City query parameter is required"));
+            }
+
+            var result = await weatherService.GetDailyForecastAsync(city, country, departDate, returnDate, ct);
+            if (result == null)
+            {
+                return Results.NotFound(new ErrorResponse($"Weather forecast data not found for city '{city}'"));
+            }
+            return Results.Ok(result);
+        })
+        .WithName("GetDailyWeatherForecast")
+        .WithSummary("Get daily weather forecast breakdown for a trip")
+        .WithDescription("Fetches daily weather forecasts including high/low temperatures, conditions, precipitation probability, UV index, and wind speeds.")
+        .Produces<TripDailyForecastResponse>(StatusCodes.Status200OK)
+        .Produces<ErrorResponse>(StatusCodes.Status400BadRequest)
+        .Produces<ErrorResponse>(StatusCodes.Status404NotFound);
+
         return group;
     }
 }

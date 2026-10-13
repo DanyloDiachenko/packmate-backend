@@ -1,5 +1,4 @@
-﻿
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -37,10 +36,18 @@ namespace TripService.Migrations
                     b.Property<DateOnly>("DepartDate")
                         .HasColumnType("date");
 
+                    b.Property<bool>("HasWeatherImpact")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
                     b.Property<bool>("IsArchived")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
                         .HasDefaultValue(false);
+
+                    b.Property<DateTime?>("LastWeatherCheckAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<DateOnly>("ReturnDate")
                         .HasColumnType("date");
@@ -57,6 +64,102 @@ namespace TripService.Migrations
                     b.HasIndex("UserId");
 
                     b.ToTable("trips", (string)null);
+                });
+
+            modelBuilder.Entity("TripService.Entities.TripWeatherForecastCache", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Condition")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTime>("FetchedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<DateOnly>("ForecastDate")
+                        .HasColumnType("date");
+
+                    b.Property<int>("HighTemp")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("IconName")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("LowTemp")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("RainProbability")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
+                    b.Property<Guid>("TripId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("UvIndex")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
+                    b.Property<int>("WindSpeed")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TripId", "ForecastDate")
+                        .IsUnique();
+
+                    b.ToTable("trip_weather_forecasts", (string)null);
+                });
+
+            modelBuilder.Entity("TripService.Entities.TripWeatherImpact", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("DetectedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasDefaultValueSql("NOW()");
+
+                    b.Property<string>("ExistingMatchedNotice")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Highlights")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<bool>("IsResolved")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<string>("Proposals")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTime?>("ResolvedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("TripId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TripId");
+
+                    b.ToTable("trip_weather_impacts", (string)null);
                 });
 
             modelBuilder.Entity("TripService.Entities.Trip", b =>
@@ -94,6 +197,28 @@ namespace TripService.Migrations
 
                     b.Navigation("Destination")
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("TripService.Entities.TripWeatherForecastCache", b =>
+                {
+                    b.HasOne("TripService.Entities.Trip", "Trip")
+                        .WithMany()
+                        .HasForeignKey("TripId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Trip");
+                });
+
+            modelBuilder.Entity("TripService.Entities.TripWeatherImpact", b =>
+                {
+                    b.HasOne("TripService.Entities.Trip", "Trip")
+                        .WithMany()
+                        .HasForeignKey("TripId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Trip");
                 });
 #pragma warning restore 612, 618
         }

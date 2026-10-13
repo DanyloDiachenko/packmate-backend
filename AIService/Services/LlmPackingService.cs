@@ -1,8 +1,9 @@
-using System.Net.Http.Headers;
-using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
+using AIService.Domain;
 using AIService.DTOs;
+using AIService.Infrastructure;
+using AIService.Settings;
+using Microsoft.Extensions.Options;
 
 namespace AIService.Services;
 
@@ -11,28 +12,26 @@ public interface IAIService
     Task<AIRecommendationResponse> GenerateRecommendationsAsync(GenerateRecommendationsRequest request, CancellationToken ct = default);
     Task<TripGeneratorResponse> GenerateTripAsync(TripGeneratorRequest request, List<ExistingTripDateDto>? existingTrips = null, CancellationToken ct = default);
     Task<AIPackingCopilotResponse> GeneratePackingCopilotDiffAsync(AIPackingCopilotRequest request, CancellationToken ct = default);
+    Task<WeatherRepackResponseDto> GenerateWeatherRepackDiffAsync(WeatherRepackRequestDto request, CancellationToken ct = default);
 }
 
 public class LlmPackingService : IAIService
 {
-    private readonly HttpClient _http;
-    private readonly IConfiguration _config;
+    private readonly GeminiClient _gemini;
+    private readonly AiSettings _settings;
     private readonly ILogger<LlmPackingService> _logger;
+    private static readonly JsonSerializerOptions CaseInsensitive = new() { PropertyNameCaseInsensitive = true };
 
-    public LlmPackingService(HttpClient http, IConfiguration config, ILogger<LlmPackingService> logger)
+    public LlmPackingService(GeminiClient gemini, IOptions<AiSettings> options, ILogger<LlmPackingService> logger)
     {
-        _http = http;
-        _config = config;
+        _gemini = gemini;
+        _settings = options.Value;
         _logger = logger;
     }
 
     public async Task<AIRecommendationResponse> GenerateRecommendationsAsync(GenerateRecommendationsRequest request, CancellationToken ct = default)
     {
-        var apiKey = _config["AiSettings:ApiKey"] ?? string.Empty;
-        var model = _config["AiSettings:Model"] ?? "gemini-3.6-flash";
-        var maxItems = _config["AiSettings:MaxRecommendations"] ?? "5";
-
-        var existingItemsList = request.ExistingItems != null && request.ExistingItems.Count > 0
+        var existingItemsList = request.ExistingItems is { Count: > 0 }
             ? string.Join(", ", request.ExistingItems)
             : "None";
 
@@ -40,7 +39,7 @@ public class LlmPackingService : IAIService
         You are PackPilot, an expert and practical travel packing assistant.
         Your mission is to recommend high-utility, context-aware, and critical packing items for an upcoming trip based on the traveler's destination, climate, season, current weather forecast, trip type/tags, duration, and local country specifics (e.g., electrical plug/socket types, voltage, local customs, and weather quirks).
         RULES:
-        1. SUGGEST AT MOST {{maxItems}} of the most useful, context-driven items. Prioritize items travelers frequently forget (e.g., specific plug adapters, climate layers, rain protection, local essentials).
+        1. SUGGEST AT MOST {{_settings.MaxRecommendations}} of the most useful, context-driven items. Prioritize items travelers frequently forget (e.g., specific plug adapters, climate layers, rain protection, local essentials).
         2. DO NOT DUPLICATE: Never suggest any items already present in the traveler's checklist: [{{existingItemsList}}]. Perform case-insensitive deduplication against this list.
         3. SECTION CATEGORIES: The "section" field MUST strictly be one of:
         - "clothes"     (Clothes & Footwear)
@@ -66,14 +65,6 @@ public class LlmPackingService : IAIService
                     "tag": "essential",
                     "iconEmoji": "🔌",
                     "reason": "Spain uses Type C and F electrical outlets at 230V."
-                },
-                {
-                    "section": "tools",
-                    "title": "Compact Umbrella",
-                    "quantity": 1,
-                    "tag": "important",
-                    "iconEmoji": "☂️",
-                    "reason": "Forecast predicts light rain showers over the weekend."
                 }
             ],
             "summaryNotes": "1-2 brief, friendly travel tips tailored to the destination and forecast."
@@ -88,506 +79,60 @@ public class LlmPackingService : IAIService
         Weather / Forecast: {request.WeatherSummary ?? "Typical for this season"}
         """;
 
-        var payload = new
+        var content = await _gemini.GenerateContentAsync(systemPrompt, userMessage, temperature: 0.5, ct);
+        if (content is null)
         {
-            system_instruction = new
-            {
-                parts = new[]
-                {
-                    new { text = systemPrompt }
-                }
-            },
-            contents = new[]
-            {
-                new
-                {
-                    role = "user",
-                    parts = new[]
-                    {
-                        new { text = userMessage }
-                    }
-                }
-            },
-            generationConfig = new
-            {
-                responseMimeType = "application/json",
-                temperature = 0.5
-            }
-        };
-
-        var baseUrl = _config["AiSettings:BaseUrl"]?.TrimEnd('/');
-        if (string.IsNullOrWhiteSpace(baseUrl) || baseUrl.Contains("gemini.google.com"))
-        {
-            baseUrl = "https://generativelanguage.googleapis.com/v1beta";
+            _logger.LogWarning("Gemini returned empty response for recommendations");
+            return new AIRecommendationResponse(new(), "Failed to generate recommendations from AI.");
         }
 
-        var endpoint = $"{baseUrl}/models/{model}:generateContent?key={apiKey}";
-
-        var requestMessage = new HttpRequestMessage(HttpMethod.Post, endpoint)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
-        };
-
-        if (!string.IsNullOrWhiteSpace(apiKey))
-        {
-            requestMessage.Headers.Add("x-goog-api-key", apiKey);
-        }
-
-        var response = await _http.SendAsync(requestMessage, ct);
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorBody = await response.Content.ReadAsStringAsync(ct);
-            _logger.LogError("Gemini API request failed with status {StatusCode}: {Error}", response.StatusCode, errorBody);
-            response.EnsureSuccessStatusCode();
-        }
-
-        var responseJson = await response.Content.ReadAsStringAsync(ct);
-        var geminiResponse = JsonSerializer.Deserialize<GeminiGenerateContentResponse>(responseJson);
-
-        var contentString = geminiResponse?.Candidates?.FirstOrDefault()?.Content?.Parts?.FirstOrDefault()?.Text;
-        if (string.IsNullOrWhiteSpace(contentString))
-        {
-            _logger.LogWarning("Gemini API returned an empty response.");
-            return new AIRecommendationResponse(new List<RecommendationItemDto>(), "Failed to generate recommendations from AI.");
-        }
-
-        var cleanedJson = contentString.Trim();
-        if (cleanedJson.StartsWith("```json", StringComparison.OrdinalIgnoreCase))
-        {
-            cleanedJson = cleanedJson.Substring(7);
-        }
-        else if (cleanedJson.StartsWith("```", StringComparison.OrdinalIgnoreCase))
-        {
-            cleanedJson = cleanedJson.Substring(3);
-        }
-
-        if (cleanedJson.EndsWith("```", StringComparison.OrdinalIgnoreCase))
-        {
-            cleanedJson = cleanedJson.Substring(0, cleanedJson.Length - 3);
-        }
-
-        cleanedJson = cleanedJson.Trim();
-
-        var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-        var recommendations = JsonSerializer.Deserialize<AIRecommendationResponse>(cleanedJson, options);
-
-        return recommendations ?? new AIRecommendationResponse(new List<RecommendationItemDto>(), string.Empty);
+        return JsonSerializer.Deserialize<AIRecommendationResponse>(content, CaseInsensitive)
+               ?? new AIRecommendationResponse(new(), string.Empty);
     }
 
     public async Task<TripGeneratorResponse> GenerateTripAsync(TripGeneratorRequest request, List<ExistingTripDateDto>? existingTrips = null, CancellationToken ct = default)
     {
-        var apiKey = _config["AiSettings:ApiKey"] ?? string.Empty;
-        var model = _config["AiSettings:Model"] ?? "gemini-3.6-flash";
-
         var today = DateTime.UtcNow;
         var currentYear = today.Year;
 
         var relevantTrips = existingTrips?
             .Where(t => t.Id == null || request.Skeleton?.TripId == null || t.Id != request.Skeleton.TripId)
-            .ToList() ?? new List<ExistingTripDateDto>();
+            .ToList() ?? new();
 
-        var bookedTripsPromptSection = string.Empty;
-        if (relevantTrips.Count > 0)
+        var bookedTripsSection = BuildBookedTripsSection(relevantTrips);
+        var systemPrompt = request.Skeleton != null
+            ? BuildTripUpdatePrompt(request.Skeleton, bookedTripsSection, today)
+            : BuildTripCreatePrompt(bookedTripsSection, today, currentYear);
+
+        var content = await _gemini.GenerateContentAsync(systemPrompt, request.Message, temperature: 0.4, ct);
+        if (content is null)
         {
-            var bookedList = string.Join("\n", relevantTrips.Select(t =>
-                $"- \"{t.Destination}\": {t.DepartDate:yyyy-MM-dd} to {t.ReturnDate:yyyy-MM-dd}"
-            ));
-
-            bookedTripsPromptSection = $"""
-
-            EXISTING BOOKED TRIPS & DATE AVAILABILITY RULES:
-            The traveler already has the following trips booked:
-            {bookedList}
-
-            AVAILABILITY VALIDATION RULES:
-            - You MUST ensure the proposed trip dates do NOT conflict or overlap with any of the traveler's existing booked trips.
-            - Overlap definition: A new trip overlaps with an existing trip if (NewDepart < ExistingReturn && NewReturn > ExistingDepart) or if both trips are single-day trips on the exact same date. Adjacent dates (where a new trip starts on the return date of another trip or ends on the departure date of another trip) are ALLOWED.
-            - If the traveler specifies EXACT dates and they conflict with an existing booked trip:
-              * Set "success": false.
-              * Set "successMessage": null.
-              * Set "errorMessage": "The requested dates conflict with your existing trip to [Destination] ([DepartDate] to [ReturnDate]). Multiple trips cannot cover the same date range."
-              * Set "missingFields": ["DepartDate", "ReturnDate"].
-              * Set "skeleton": null.
-              * Set "nextPossibleActions": List of 2-3 suggestions (e.g. "Choose an alternative week", "Adjust dates to avoid the conflict").
-            - If the traveler specifies an APPROXIMATE timeframe, month, or season (e.g. "in July", "1 week beach vacation in Barcelona, Spain in July"):
-              * Choose concrete calendar dates ("departDate" and "returnDate") within that requested month/period that completely AVOID and do NOT overlap with these booked trips.
-              * If ALL available consecutive dates for the requested duration in that month/timeframe are completely blocked by booked trips:
-                Set "success": false.
-                Set "successMessage": null.
-                Set "errorMessage": "All dates for a [duration]-day trip in [month/timeframe] conflict with your existing booked trips. Please choose another month or adjust the duration."
-                Set "missingFields": ["DepartDate", "ReturnDate"].
-                Set "skeleton": null.
-                Set "nextPossibleActions": List of 2-3 suggestions for free weeks in adjacent months.
-            """;
-        }
-
-        string systemPrompt;
-        if (request.Skeleton != null)
-        {
-            var existingSkeletonJson = JsonSerializer.Serialize(request.Skeleton, new JsonSerializerOptions
-            {
-                WriteIndented = true,
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-            });
-
-            systemPrompt = $$"""
-            You are ReadyRoam's expert AI Trip Architect & Packing Specialist.
-            You are in TRIP UPDATE MODE. The traveler has provided an EXISTING TRIP SKELETON below and sent a message requesting updates, modifications, refinements, or additional items for their trip.
-
-            CURRENT DATE CONTEXT: Today is {{today:yyyy-MM-dd}} (UTC).
-
-            EXISTING TRIP SKELETON:
-            {{existingSkeletonJson}}
-            {{bookedTripsPromptSection}}
-
-            TRIP UPDATE RULES:
-            1. You MUST use the existing skeleton as your starting base. Do NOT discard unchanged details.
-            2. Apply the traveler's requested changes directly to this skeleton:
-               - If dates or duration change (either exact dates or flexible timeframe like 'reschedule to 1 week in August'):
-                 * Choose concrete calendar dates within the requested window that do NOT overlap with booked trips.
-                 * Recalculate "departDate", "returnDate", and "durationDays". Update "weatherSummary" and "currentSeason" to match the new dates.
-               - If destination changes: update "city", "country", "countryFlag", "bannerImage", "weatherSummary", and "currentSeason".
-               - If trip type/tags change: add, remove, or replace relevant "tags".
-               - If packing items are requested (add, remove, replace, modify quantities, optimize):
-                 * Retain existing items that the user didn't ask to remove or modify.
-                 * Add newly requested items with appropriate "section", "title", "quantity", "tag" ("essential"|"important"|"safety"|"optional"), "iconEmoji", and "reason".
-                 * Remove or modify items as requested by the user.
-                 * Allowed sections: "clothes", "electro", "documents", "toiletries", "tools".
-               - Retain all existing fields (city, country, bannerImage, items, tags) that the user did not ask to alter.
-            3. Formulate "successMessage":
-               - When successful, generate a concise, friendly explanation (1-2 sentences) of what you modified or checked (e.g. what dates were updated, which items were added or removed, or if an item was already present in the trip items list).
-            4. Set "success": true, "errorMessage": null, "missingFields": null.
-            5. If the message is completely contradictory, incomprehensible, or impossible to apply:
-               Set "success": false.
-               Set "successMessage": null.
-               Set "errorMessage": Clear explanation of what cannot be updated or needs clarification.
-               Set "missingFields": null.
-               Set "skeleton": null.
-               Set "nextPossibleActions": null.
-            6. Provide "nextPossibleActions": List of 0-3 short, highly relevant prompt suggestions ("quick action pills") that the traveler can click to refine their packing list or trip.
-               STRICT RULES FOR NEXT POSSIBLE ACTIONS:
-               - ReadyRoam is strictly a packing and travel luggage preparation app.
-               - Allowed types of actions ONLY:
-                 * Adding packing items tailored to specific places, landmarks, or activities planned at the destination (e.g. "Add comfortable walking shoes for city sightseeing and museum walking", "Add modest attire for cathedral visits", "Add beach towel and swimwear").
-                 * Adding weather-appropriate packing items (e.g. "Add compact rain umbrella and waterproof jacket", "Add high SPF sun protection").
-                 * Luggage or packing constraints (e.g. "Optimize packing list for carry-on luggage only", "Minimize liquid toiletries").
-                 * Practical date adjustments if relevant (e.g. "Adjust dates to a different weekend").
-               - STRICTLY FORBIDDEN (DO NOT GENERATE):
-                 * NO restaurant, bistro, bakery, cafe, food, or dining recommendations.
-                 * NO museum ticket reminders, entrance ticket booking, or reservation alerts.
-                 * NO general travel reminders, flight reminders, or non-packing advice.
-               - IMPORTANT: If no clear, relevant packing or trip adjustments are needed, send an empty array []! Do NOT hallucinate filler suggestions. It is much better to return [] than irrelevant actions.
-
-            OUTPUT FORMAT: Output MUST be STRICTLY raw, valid JSON matching the schema below. Do NOT wrap in markdown code blocks (NO ```json), and do NOT include any introductory or concluding text.
-
-            JSON SCHEMA:
-            {
-              "success": true,
-              "successMessage": "I've updated your trip dates to Nov 10–16, recalculated the 7-day duration, and added a warm waterproof jacket to your clothes section. Type C power adapter was already in your essentials!",
-              "errorMessage": null,
-              "missingFields": null,
-              "skeleton": {
-                "city": "Budapest",
-                "country": "Hungary",
-                "countryFlag": "🇭🇺",
-                "bannerImage": "https://images.unsplash.com/photo-1549877452-9c387954fbc2?auto=format&fit=crop&w=1600&q=80",
-                "departDate": "2026-11-08",
-                "returnDate": "2026-11-13",
-                "durationDays": 6,
-                "tags": ["Business", "City Break"],
-                "weatherSummary": "Chilly autumn weather, 6-11°C with partly cloudy skies",
-                "currentSeason": "Autumn",
-                "items": [
-                  {
-                    "section": "documents",
-                    "title": "Passport & EU Travel Documents",
-                    "quantity": 1,
-                    "tag": "essential",
-                    "iconEmoji": "🛂",
-                    "reason": "Required for international border control and hotel check-in."
-                  }
-                ]
-              },
-              "nextPossibleActions": [
-                "Optimize luggage for carry-on only",
-                "Add formal business meeting attire"
-              ]
-            }
-            """;
-        }
-        else
-        {
-            systemPrompt = $$"""
-            You are ReadyRoam's expert AI Trip Architect & Packing Specialist.
-            Your job is to analyze natural language travel prompts from travelers, extract their trip parameters, validate if all required information is available, and generate a structured Trip Skeleton with weather context, packing items, and next actionable steps.
-
-            CURRENT DATE CONTEXT: Today is {{today:yyyy-MM-dd}} (UTC). Default to year {{currentYear}} unless a specific future date or month requires {{currentYear + 1}} (for example, if today is in October and the user requests 'in July', schedule for July {{currentYear + 1}}).
-            {{bookedTripsPromptSection}}
-
-            REQUIRED INFORMATION:
-            1. Destination (City and Country). Both MUST be identifiable (e.g. "Barcelona, Spain", "Budapest, Hungary", "Tokyo, Japan").
-            2. Travel Dates / Timeframe:
-               - EXACT DATES: If the user provides specific dates (e.g. 'Nov 8 - Nov 13', 'October 5 to October 12'), use those exact dates.
-               - FLEXIBLE / APPROXIMATE TIMEFRAME: If the user specifies a general timeframe, month, season, and/or duration without exact calendar days (e.g. '1 week beach vacation in Barcelona, Spain in July', 'a weekend in Rome in September', '5 days in Paris this summer'):
-                 * Intelligently choose concrete calendar dates ("departDate" and "returnDate") within that requested month or season matching the duration (e.g. 1 week = 7 days, weekend = 3 days; default = 5-7 days if duration is unspecified).
-                 * Ensure the chosen dates completely AVOID and do NOT overlap with any of the traveler's existing booked trips listed above. Pick a convenient block (e.g., Saturday to Saturday or mid-month) that is completely free.
-                 * If the user asks for a month that has already passed in {{currentYear}} relative to today ({{today:yyyy-MM-dd}}), schedule for {{currentYear + 1}}.
-
-            VALIDATION LOGIC:
-            - If Destination (City or Country) is missing, ambiguous, or incomplete (e.g. 'I want a vacation in July' with no destination, or 'I go to Ukraine for spa' with no city):
-              Set "success": false.
-              Set "successMessage": null.
-              Provide a clear, friendly "errorMessage" in English explaining what is missing (e.g. "Please specify the destination city and timeframe (e.g., '1 week beach vacation in Barcelona in July').").
-              Set "missingFields" to ["City", "Country"].
-              Set "skeleton": null.
-              Set "nextPossibleActions": null.
-            - If no timeframe, dates, month, or season can be identified at all (e.g. 'trip to Barcelona' with zero timing):
-              Set "success": false.
-              Set "successMessage": null.
-              Provide a clear, friendly "errorMessage" in English (e.g. "Please specify when you plan to travel (e.g., 'in July', 'next weekend', or 'Nov 8 - Nov 13').").
-              Set "missingFields" to ["DepartDate", "ReturnDate"].
-              Set "skeleton": null.
-              Set "nextPossibleActions": null.
-            - If the requested timeframe is completely blocked by existing booked trips and no free window of the requested duration exists in that month/period:
-              Set "success": false.
-              Set "successMessage": null.
-              Provide a clear, friendly "errorMessage" explaining that the requested month or timeframe is fully blocked by your existing trips and suggest picking another month.
-              Set "missingFields": ["DepartDate", "ReturnDate"].
-              Set "skeleton": null.
-              Set "nextPossibleActions": List of 2-3 suggestions for open dates in adjacent months.
-            - If all required details are present (either exact dates or flexible timeframe with available dates):
-              Set "success": true.
-              Set "successMessage": A concise, friendly summary (1-2 sentences) explaining the generated trip, mentioning the destination, the selected dates, duration, and context (e.g. "I've planned your 1-week beach vacation in Barcelona, Spain from July 11 to July 18, {{currentYear + 1}}, perfectly scheduled around your other trips with summer beach essentials!").
-              Set "errorMessage": null.
-              Set "missingFields": null.
-              Generate the "skeleton" object with:
-                - "city": Normalized destination city name.
-                - "country": Normalized destination country name.
-                - "countryFlag": ISO flag emoji (e.g. 🇪🇸, 🇭🇺, 🇫🇷, 🇯🇵).
-                - "bannerImage": High-quality scenic Unsplash photo URL representing the city or country, or null.
-                - "departDate": "YYYY-MM-DD".
-                - "returnDate": "YYYY-MM-DD".
-                - "durationDays": Calculated integer days (minimum 1).
-                - "tags": List of trip types/activities (e.g. ["Beach", "Leisure", "City Break", "Adventure"]).
-                - "weatherSummary": Estimated/predicted weather for destination and dates (e.g. "Warm Mediterranean sunshine, 28-32°C, dry and sunny").
-                - "currentSeason": Seasonal context (e.g. "Summer", "Autumn", "Winter", "Spring").
-                - "items": Curated starter list of 8-15 context-aware packing items categorized across:
-                    - "clothes"
-                    - "electro"
-                    - "documents"
-                    - "toiletries"
-                    - "tools"
-                  Each item must include "section", "title", "quantity", "tag" ("essential"|"important"|"safety"|"optional"), "iconEmoji", and "reason".
-              Generate "nextPossibleActions": List of 0-3 short, highly relevant prompt suggestions ("quick action pills") the traveler can click to refine their packing list or trip.
-                STRICT RULES FOR NEXT POSSIBLE ACTIONS:
-                - ReadyRoam is strictly a packing and travel luggage preparation app.
-                - Allowed types of actions ONLY:
-                  * Adding packing items tailored to specific places, landmarks, or activities planned at the destination (e.g. "Add comfortable walking shoes for city sightseeing and museum walking", "Add modest attire for cathedral visits", "Add beach towel and water shoes").
-                  * Adding weather-appropriate packing items (e.g. "Add compact umbrella and rain jacket", "Add high SPF sun protection").
-                  * Luggage or packing constraints (e.g. "Optimize packing list for carry-on luggage only", "Minimize liquid toiletries").
-                  * Practical date adjustments if applicable (e.g. "Adjust dates to a different weekend").
-                - STRICTLY FORBIDDEN (DO NOT GENERATE):
-                  * NO restaurant, bistro, bakery, cafe, food, or dining recommendations.
-                  * NO museum ticket reminders, entrance ticket booking, or reservation alerts.
-                  * NO general travel reminders, flight reminders, or non-packing advice.
-                - IMPORTANT: If no highly relevant packing or trip adjustments are needed, send an empty array []! Do NOT hallucinate filler suggestions. An empty array [] is completely acceptable and preferred over irrelevant suggestions.
-
-            OUTPUT FORMAT: Output MUST be STRICTLY raw, valid JSON matching the schema below. Do NOT wrap in markdown code blocks (NO ```json), and do NOT include any introductory or concluding text.
-
-            JSON SCHEMA:
-            {
-              "success": true,
-              "successMessage": "I've planned your 1-week beach vacation in Barcelona, Spain from July 11 to July 18, 2027, with curated summer beach essentials!",
-              "errorMessage": null,
-              "missingFields": null,
-              "skeleton": {
-                "city": "Barcelona",
-                "country": "Spain",
-                "countryFlag": "🇪🇸",
-                "bannerImage": "https://images.unsplash.com/photo-1583422409516-2895a77efded?auto=format&fit=crop&w=1600&q=80",
-                "departDate": "2027-07-11",
-                "returnDate": "2027-07-18",
-                "durationDays": 7,
-                "tags": ["Beach", "Leisure", "City Break"],
-                "weatherSummary": "Hot and sunny Mediterranean weather, 28-32°C with warm sea temperatures",
-                "currentSeason": "Summer",
-                "items": [
-                  {
-                    "section": "clothes",
-                    "title": "Swimwear & Beach Cover-up",
-                    "quantity": 2,
-                    "tag": "essential",
-                    "iconEmoji": "🩱",
-                    "reason": "Essential for Barcelona's Barceloneta and Bogatell beaches."
-                  },
-                  {
-                    "section": "toiletries",
-                    "title": "Reef-Safe High SPF Sunscreen",
-                    "quantity": 1,
-                    "tag": "essential",
-                    "iconEmoji": "🧴",
-                    "reason": "Intense Mediterranean UV index in July requires strong sun protection."
-                  }
-                ]
-              },
-              "nextPossibleActions": [
-                "Optimize luggage for carry-on only",
-                "Add beach towel and water shoes",
-                "Add comfortable walking shoes for Park Güell and Gothic Quarter"
-              ]
-            }
-            """;
-        }
-
-        var payload = new
-        {
-            system_instruction = new
-            {
-                parts = new[]
-                {
-                    new { text = systemPrompt }
-                }
-            },
-            contents = new[]
-            {
-                new
-                {
-                    role = "user",
-                    parts = new[]
-                    {
-                        new { text = request.Message }
-                    }
-                }
-            },
-            generationConfig = new
-            {
-                responseMimeType = "application/json",
-                temperature = 0.4
-            }
-        };
-
-        var baseUrl = _config["AiSettings:BaseUrl"]?.TrimEnd('/');
-        if (string.IsNullOrWhiteSpace(baseUrl) || baseUrl.Contains("gemini.google.com"))
-        {
-            baseUrl = "https://generativelanguage.googleapis.com/v1beta";
-        }
-
-        var endpoint = $"{baseUrl}/models/{model}:generateContent?key={apiKey}";
-
-        var requestMessage = new HttpRequestMessage(HttpMethod.Post, endpoint)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
-        };
-
-        if (!string.IsNullOrWhiteSpace(apiKey))
-        {
-            requestMessage.Headers.Add("x-goog-api-key", apiKey);
-        }
-
-        var response = await _http.SendAsync(requestMessage, ct);
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorBody = await response.Content.ReadAsStringAsync(ct);
-            _logger.LogError("Gemini API request failed with status {StatusCode}: {Error}", response.StatusCode, errorBody);
-            response.EnsureSuccessStatusCode();
-        }
-
-        var responseJson = await response.Content.ReadAsStringAsync(ct);
-        var geminiResponse = JsonSerializer.Deserialize<GeminiGenerateContentResponse>(responseJson);
-
-        var contentString = geminiResponse?.Candidates?.FirstOrDefault()?.Content?.Parts?.FirstOrDefault()?.Text;
-        if (string.IsNullOrWhiteSpace(contentString))
-        {
-            _logger.LogWarning("Gemini API returned an empty response for Trip Generator.");
+            _logger.LogWarning("Gemini returned empty response for trip generator");
             return new TripGeneratorResponse(false, null, "AI Service was unable to process the request.", null, null, null);
         }
 
-        var cleanedJson = contentString.Trim();
-        if (cleanedJson.StartsWith("```json", StringComparison.OrdinalIgnoreCase))
-        {
-            cleanedJson = cleanedJson.Substring(7);
-        }
-        else if (cleanedJson.StartsWith("```", StringComparison.OrdinalIgnoreCase))
-        {
-            cleanedJson = cleanedJson.Substring(3);
-        }
-
-        if (cleanedJson.EndsWith("```", StringComparison.OrdinalIgnoreCase))
-        {
-            cleanedJson = cleanedJson.Substring(0, cleanedJson.Length - 3);
-        }
-
-        cleanedJson = cleanedJson.Trim();
-
-        var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-        var generatorResponse = JsonSerializer.Deserialize<TripGeneratorResponse>(cleanedJson, options);
-
-        if (generatorResponse == null)
-        {
+        var result = JsonSerializer.Deserialize<TripGeneratorResponse>(content, CaseInsensitive);
+        if (result is null)
             return new TripGeneratorResponse(false, null, "Failed to parse AI Trip Generator output.", null, null, null);
-        }
 
-        if (generatorResponse.Success && generatorResponse.Skeleton != null && relevantTrips.Count > 0)
-        {
-            var skeleton = generatorResponse.Skeleton;
-            var conflict = relevantTrips.FirstOrDefault(t =>
-                (skeleton.DepartDate < t.ReturnDate && skeleton.ReturnDate > t.DepartDate) ||
-                (skeleton.DepartDate == skeleton.ReturnDate && t.DepartDate == t.ReturnDate && skeleton.DepartDate == t.DepartDate)
-            );
-
-            if (conflict != null)
-            {
-                return new TripGeneratorResponse(
-                    false,
-                    null,
-                    $"The requested dates ({skeleton.DepartDate:yyyy-MM-dd} to {skeleton.ReturnDate:yyyy-MM-dd}) conflict with your existing trip to '{conflict.Destination}' ({conflict.DepartDate:yyyy-MM-dd} to {conflict.ReturnDate:yyyy-MM-dd}). Multiple trips cannot cover the same date range.",
-                    new List<string> { "DepartDate", "ReturnDate" },
-                    null,
-                    new List<string>
-                    {
-                        "Choose a different date range",
-                        "Reschedule conflicting trip",
-                        "Adjust duration to avoid date collision"
-                    }
-                );
-            }
-        }
-
-        return generatorResponse;
+        return ValidateConflicts(result, relevantTrips);
     }
 
     public async Task<AIPackingCopilotResponse> GeneratePackingCopilotDiffAsync(AIPackingCopilotRequest request, CancellationToken ct = default)
     {
-        var apiKey = _config["AiSettings:ApiKey"] ?? string.Empty;
-        var model = _config["AiSettings:Model"] ?? "gemini-3.6-flash";
-
-        var existingItems = request.ExistingItems ?? new List<CopilotExistingItemDto>();
+        var existingItems = request.ExistingItems ?? new();
         var itemsJson = JsonSerializer.Serialize(existingItems.Select(i => new
         {
-            id = i.Id,
-            title = i.Title,
-            section = i.Section,
-            quantity = i.Quantity,
-            isPacked = i.IsPacked,
-            tag = i.Tag
+            id = i.Id, title = i.Title, section = i.Section,
+            quantity = i.Quantity, isPacked = i.IsPacked, tag = i.Tag
         }), new JsonSerializerOptions { WriteIndented = true });
 
-        var contextDescription = new StringBuilder();
-        if (!string.IsNullOrWhiteSpace(request.Destination))
-        {
-            contextDescription.AppendLine($"- Destination: {request.Destination}");
-        }
-        if (!string.IsNullOrWhiteSpace(request.DateRange))
-        {
-            contextDescription.AppendLine($"- Travel Dates: {request.DateRange}");
-        }
-        if (request.NightsCount.HasValue)
-        {
-            contextDescription.AppendLine($"- Duration: {request.NightsCount.Value} nights");
-        }
-
-        var travelContextInfo = contextDescription.Length > 0
-            ? contextDescription.ToString().TrimEnd()
+        var contextLines = new System.Text.StringBuilder();
+        if (!string.IsNullOrWhiteSpace(request.Destination)) contextLines.AppendLine($"- Destination: {request.Destination}");
+        if (!string.IsNullOrWhiteSpace(request.DateRange)) contextLines.AppendLine($"- Travel Dates: {request.DateRange}");
+        if (request.NightsCount.HasValue) contextLines.AppendLine($"- Duration: {request.NightsCount.Value} nights");
+        var travelContext = contextLines.Length > 0
+            ? contextLines.ToString().TrimEnd()
             : "No specific destination details provided. Apply general travel logic.";
 
         var systemPrompt = $$"""
@@ -595,7 +140,7 @@ public class LlmPackingService : IAIService
         You act as an intelligent packing advisor that proposes a structured patch (Diff/Suggestions) to an EXISTING packing list, rather than regenerating a list from scratch or mutating a database.
 
         TRAVEL CONTEXT:
-        {{travelContextInfo}}
+        {{travelContext}}
 
         CURRENT CHECKLIST (existingItems):
         {{itemsJson}}
@@ -612,392 +157,196 @@ public class LlmPackingService : IAIService
         - "Miscellaneous & Gear"
 
         COPILOT DIFF RULES:
-        1. ADDITIONS ("additions"):
-           - Suggest relevant items to add for the user's prompt (e.g. hiking gear, trail snacks, weather essentials, activity items).
-           - DO NOT propose items that are already in the existingItems checklist! Perform case-insensitive deduplication against existing titles.
-           - Provide: "section", "title", "quantity" (integer >= 1), "tag" ("Essential"|"Important"|"Safety"|"Optional"), and a clear "reason" explaining why it is needed.
+        1. ADDITIONS ("additions"): Suggest relevant items to add. DO NOT DUPLICATE items in existingItems. Provide: "section", "title", "quantity", "tag" ("Essential"|"Important"|"Safety"|"Optional"), "reason".
+        2. REMOVALS ("removals"): Suggest removing redundant items. "itemId" MUST match an "id" from existingItems. NEVER remove isPacked:true items unless the user explicitly requested it. Provide: "itemId", "title", "section", "reason".
+        3. MODIFICATIONS ("modifications"): Suggest quantity or tag changes. "itemId" MUST match an "id" from existingItems. Provide: "itemId", "title", "section", "newQuantity", "newTag", "reason".
+        4. NEXT ACTIONS ("nextActions"): 1-3 short logical follow-up actions as first-person phrases.
+        5. EXPLANATION ("explanation"): Concise 1-2 sentence summary of suggestions.
+        6. STRICT DOMAIN: Packing and travel preparation only. No restaurant, museum, flight, or hotel recommendations.
 
-        2. REMOVALS ("removals"):
-           - Suggest removing redundant or unnecessary items from existingItems.
-           - CRITICAL GUARDRAIL: "itemId" MUST match the exact "id" from existingItems! Do NOT invent new IDs.
-           - PACKED ITEMS GUARDRAIL: NEVER remove items where "isPacked" is true, unless the user explicitly requested removing that specific item.
-           - Provide: "itemId" (exact ID from existingItems), "title", "section", and "reason".
-
-        3. MODIFICATIONS ("modifications"):
-           - Suggest quantity or tag changes for items in existingItems (e.g. reducing t-shirts from 5 to 3 for laundry or carry-on, or updating tags).
-           - CRITICAL GUARDRAIL: "itemId" MUST match the exact "id" from existingItems!
-           - Provide: "itemId", "title", "section", "newQuantity" (integer >= 1), "newTag", and "reason".
-
-        4. NEXT ACTIONS ("nextActions"):
-           - Suggest 1 to 3 (MAXIMUM 3!) short, logical follow-up actions as first-person phrases (e.g. "Make this fit into carry-on", "Add trail snacks & electrolyte tabs", "What am I missing?", "Make it lighter", "Check blister first aid kit").
-
-        5. EXPLANATION ("explanation"):
-           - Concise 1-2 sentence explanation of proposed suggestions and rationale.
-
-        6. STRICT DOMAIN RESTRICTIONS:
-           - ReadyRoam is strictly a packing and travel preparation assistant.
-           - NO restaurant, bistro, bakery, cafe, food, or dining recommendations.
-           - NO museum ticket booking reminders, entrance reservations, or tour guides.
-           - NO flight or hotel booking alerts.
-
-        OUTPUT FORMAT: STRICTLY raw, valid JSON matching the schema below. No markdown fences (NO ```json).
+        OUTPUT FORMAT: STRICTLY raw, valid JSON. No markdown fences.
 
         JSON SCHEMA:
         {
           "success": true,
-          "explanation": "Added mountain trail gear and adjusted clothing quantities for outdoor activity.",
-          "additions": [
-            {
-              "section": "Clothes & Footwear",
-              "title": "Hiking Boots",
-              "quantity": 1,
-              "tag": "Essential",
-              "reason": "Supportive footwear for rugged mountain trails"
-            }
-          ],
-          "removals": [
-            {
-              "itemId": "c1a2b3d4-0000-0000-0000-000000000003",
-              "title": "Heavy Winter Coat",
-              "section": "Clothes & Footwear",
-              "reason": "Too warm and bulky for active hiking"
-            }
-          ],
-          "modifications": [
-            {
-              "itemId": "c1a2b3d4-0000-0000-0000-000000000002",
-              "title": "T-Shirts / Tops",
-              "section": "Clothes & Footwear",
-              "newQuantity": 3,
-              "newTag": "Important",
-              "reason": "Reduced quantity to save bag space"
-            }
-          ],
-          "nextActions": [
-            "Make this fit into carry-on",
-            "Add trail snacks & electrolyte tabs",
-            "Check blister first aid kit"
-          ],
+          "explanation": "...",
+          "additions": [{"section":"...","title":"...","quantity":1,"tag":"...","reason":"..."}],
+          "removals": [{"itemId":"...","title":"...","section":"...","reason":"..."}],
+          "modifications": [{"itemId":"...","title":"...","section":"...","newQuantity":1,"newTag":"...","reason":"..."}],
+          "nextActions": ["..."],
           "errorMessage": null
         }
         """;
 
-        var payload = new
-        {
-            system_instruction = new
-            {
-                parts = new[]
-                {
-                    new { text = systemPrompt }
-                }
-            },
-            contents = new[]
-            {
-                new
-                {
-                    role = "user",
-                    parts = new[]
-                    {
-                        new { text = request.Prompt }
-                    }
-                }
-            },
-            generationConfig = new
-            {
-                responseMimeType = "application/json",
-                temperature = 0.4
-            }
-        };
-
-        var baseUrl = _config["AiSettings:BaseUrl"]?.TrimEnd('/');
-        if (string.IsNullOrWhiteSpace(baseUrl) || baseUrl.Contains("gemini.google.com"))
-        {
-            baseUrl = "https://generativelanguage.googleapis.com/v1beta";
-        }
-
-        var endpoint = $"{baseUrl}/models/{model}:generateContent?key={apiKey}";
-
-        var requestMessage = new HttpRequestMessage(HttpMethod.Post, endpoint)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
-        };
-
-        if (!string.IsNullOrWhiteSpace(apiKey))
-        {
-            requestMessage.Headers.Add("x-goog-api-key", apiKey);
-        }
-
-        var response = await _http.SendAsync(requestMessage, ct);
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorBody = await response.Content.ReadAsStringAsync(ct);
-            _logger.LogError("Gemini API request failed for Copilot with status {StatusCode}: {Error}", response.StatusCode, errorBody);
-            response.EnsureSuccessStatusCode();
-        }
-
-        var responseJson = await response.Content.ReadAsStringAsync(ct);
-        var geminiResponse = JsonSerializer.Deserialize<GeminiGenerateContentResponse>(responseJson);
-
-        var contentString = geminiResponse?.Candidates?.FirstOrDefault()?.Content?.Parts?.FirstOrDefault()?.Text;
-        if (string.IsNullOrWhiteSpace(contentString))
-        {
+        var content = await _gemini.GenerateContentAsync(systemPrompt, request.Prompt, temperature: 0.4, ct);
+        if (content is null)
             return new AIPackingCopilotResponse(false, null, new(), new(), new(), new(), "AI Service was unable to process the Copilot request.");
-        }
 
-        var cleanedJson = contentString.Trim();
-        if (cleanedJson.StartsWith("```json", StringComparison.OrdinalIgnoreCase))
-        {
-            cleanedJson = cleanedJson.Substring(7);
-        }
-        else if (cleanedJson.StartsWith("```", StringComparison.OrdinalIgnoreCase))
-        {
-            cleanedJson = cleanedJson.Substring(3);
-        }
-
-        if (cleanedJson.EndsWith("```", StringComparison.OrdinalIgnoreCase))
-        {
-            cleanedJson = cleanedJson.Substring(0, cleanedJson.Length - 3);
-        }
-
-        cleanedJson = cleanedJson.Trim();
-
-        var copilotOutput = JsonSerializer.Deserialize<GeminiCopilotDiffOutput>(cleanedJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-        if (copilotOutput == null)
-        {
+        var output = JsonSerializer.Deserialize<GeminiCopilotDiffOutput>(content, CaseInsensitive);
+        if (output is null)
             return new AIPackingCopilotResponse(false, null, new(), new(), new(), new(), "Failed to parse AI Copilot output.");
-        }
 
-        return ReconcileCopilotDiff(existingItems, copilotOutput, request.Prompt);
+        return CopilotDiffReconciler.Reconcile(existingItems, output, request.Prompt);
     }
 
-    public static string? GetCategoryKey(string? section)
+    public async Task<WeatherRepackResponseDto> GenerateWeatherRepackDiffAsync(WeatherRepackRequestDto request, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(section)) return null;
-        var s = section.Trim().ToLowerInvariant();
-        if (s.Contains("cloth") || s.Contains("footwear") || s.Contains("wear") || s.Contains("shoe") || s.Contains("pant") || s.Contains("shirt")) return "clothes";
-        if (s.Contains("doc") || s.Contains("essent") || s.Contains("money") || s.Contains("passport") || s.Contains("wallet")) return "documents";
-        if (s.Contains("toil") || s.Contains("hygiene") || s.Contains("bath") || s.Contains("cosmetic")) return "toiletries";
-        if (s.Contains("electr") || s.Contains("tech") || s.Contains("gadget") || s.Contains("device")) return "electronics";
-        if (s.Contains("health") || s.Contains("well") || s.Contains("med") || s.Contains("first aid") || s.Contains("pharmacy")) return "health";
-        if (s.Contains("misc") || s.Contains("gear") || s.Contains("tool")) return "misc";
-        return null;
+        var systemPrompt = """
+        You are ReadyRoam's Weather Intelligence Copilot.
+        Analyze weather changes for an upcoming trip and propose packing adjustments (Diff).
+        CRITICAL GUARDRAILS:
+        1. ID INTEGRITY: Do not duplicate items that already exist in existingTripItems.
+        2. NO HALLUCINATIONS: Propose only realistic, compact travel items directly related to the weather delta.
+        3. CONSERVATIVE QUANTITIES: Quantity must be 1.
+        4. STANDARD SECTIONS ONLY: Choose section from: ['Clothes & Footwear', 'Toiletries', 'Accessories', 'Documents & Money', 'Health & Medication', 'Electronics'].
+        5. STRUCTURED JSON OUTPUT: Return valid raw JSON matching the exact schema without markdown fences.
+
+        JSON SCHEMA:
+        {
+          "highlights": [{"icon":"cloud.rain.fill","iconColor":"38BDF8","title":"Rain expected on Thursday","detail":"Showers forecast during daytime outdoor sightseeing. High probability (70%)."}],
+          "proposals": [{"title":"Light Packable Rain Jacket","section":"Clothes & Footwear","quantity":1,"tag":"essential","reason":"Sudden heavy rainfall forecast on Thursday (70%)"}],
+          "existingMatchedNotice": "Sunglasses & sunscreen already verified in your list. No duplicates suggested."
+        }
+        """;
+
+        try
+        {
+            var content = await _gemini.GenerateContentAsync(
+                systemPrompt,
+                JsonSerializer.Serialize(request, new JsonSerializerOptions { WriteIndented = true }),
+                temperature: 0.3, ct);
+
+            if (content is not null)
+            {
+                var output = JsonSerializer.Deserialize<GeminiWeatherRepackOutput>(content, CaseInsensitive);
+                if (output is not null)
+                    return WeatherRepackReconciler.Reconcile(request, output);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to call Gemini API for Weather Repack");
+        }
+
+        return WeatherRepackReconciler.Fallback(request);
     }
 
-    public static bool IsSameCategory(string? sectionA, string? sectionB)
+    // ── Private prompt builders ──────────────────────────────────────────
+
+    private static string BuildBookedTripsSection(List<ExistingTripDateDto> trips)
     {
-        var catA = GetCategoryKey(sectionA);
-        var catB = GetCategoryKey(sectionB);
-        return catA != null && catA == catB;
+        if (trips.Count == 0) return string.Empty;
+
+        var list = string.Join("\n", trips.Select(t =>
+            $"- \"{t.Destination}\": {t.DepartDate:yyyy-MM-dd} to {t.ReturnDate:yyyy-MM-dd}"));
+
+        return $"""
+
+            EXISTING BOOKED TRIPS & DATE AVAILABILITY RULES:
+            The traveler already has the following trips booked:
+            {list}
+
+            AVAILABILITY VALIDATION RULES:
+            - You MUST ensure the proposed trip dates do NOT conflict or overlap with any of the traveler's existing booked trips.
+            - Overlap definition: A new trip overlaps with an existing trip if (NewDepart < ExistingReturn && NewReturn > ExistingDepart) or if both trips are single-day trips on the exact same date. Adjacent dates are ALLOWED.
+            - If the traveler specifies EXACT dates that conflict: set success=false, provide errorMessage explaining the conflict, set missingFields=["DepartDate","ReturnDate"], skeleton=null.
+            - If the traveler specifies an APPROXIMATE timeframe, choose concrete dates that avoid all booked trips. If the entire timeframe is blocked, set success=false.
+            """;
     }
 
-    public static string ResolveSectionName(string? requestedSection, IEnumerable<string>? existingSections = null)
+    private static string BuildTripUpdatePrompt(TripSkeletonDto skeleton, string bookedSection, DateTime today)
     {
-        var trimmed = requestedSection?.Trim() ?? string.Empty;
-        var existingList = existingSections?
-            .Where(s => !string.IsNullOrWhiteSpace(s))
-            .Select(s => s.Trim())
-            .Distinct()
-            .ToList() ?? new List<string>();
-
-        if (existingList.Count > 0)
+        var existingJson = JsonSerializer.Serialize(skeleton, new JsonSerializerOptions
         {
-            var exactMatch = existingList.FirstOrDefault(s => string.Equals(s, trimmed, StringComparison.OrdinalIgnoreCase));
-            if (exactMatch != null)
-            {
-                return exactMatch;
-            }
+            WriteIndented = true,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        });
 
-            var catMatch = existingList.FirstOrDefault(s => IsSameCategory(s, trimmed));
-            if (catMatch != null)
-            {
-                return catMatch;
-            }
+        return $$"""
+            You are ReadyRoam's expert AI Trip Architect & Packing Specialist.
+            You are in TRIP UPDATE MODE. The traveler has provided an EXISTING TRIP SKELETON below and sent a message requesting updates, modifications, refinements, or additional items for their trip.
 
-            if (existingList.All(s => s == s.ToLowerInvariant()))
-            {
-                return NormalizeSectionName(trimmed).ToLowerInvariant();
-            }
-        }
+            CURRENT DATE CONTEXT: Today is {{today:yyyy-MM-dd}} (UTC).
 
-        return NormalizeSectionName(trimmed);
+            EXISTING TRIP SKELETON:
+            {{existingJson}}
+            {{bookedSection}}
+
+            TRIP UPDATE RULES:
+            1. Use the existing skeleton as your starting base. Do NOT discard unchanged details.
+            2. Apply the traveler's requested changes directly to this skeleton. Update dates, destination, tags, or packing items as requested.
+            3. Formulate "successMessage": a concise, friendly explanation (1-2 sentences) of what you modified.
+            4. Set "success": true, "errorMessage": null, "missingFields": null on success.
+            5. If the message is completely contradictory or impossible to apply: set success=false, errorMessage explains why, skeleton=null.
+            6. Provide "nextPossibleActions": 0-3 short packing or trip refinement suggestions. NO dining, museum, or travel booking suggestions.
+
+            OUTPUT FORMAT: STRICTLY raw, valid JSON. No markdown fences.
+
+            JSON SCHEMA:
+            {
+              "success": true,
+              "successMessage": "...",
+              "errorMessage": null,
+              "missingFields": null,
+              "skeleton": { "city":"...", "country":"...", "countryFlag":"...", "bannerImage":"...", "departDate":"YYYY-MM-DD", "returnDate":"YYYY-MM-DD", "durationDays":7, "tags":[], "weatherSummary":"...", "currentSeason":"...", "items":[] },
+              "nextPossibleActions": []
+            }
+            """;
     }
 
-    public static string NormalizeSectionName(string? section)
+    private static string BuildTripCreatePrompt(string bookedSection, DateTime today, int currentYear)
     {
-        if (string.IsNullOrWhiteSpace(section)) return "Miscellaneous & Gear";
-        var s = section.Trim().ToLowerInvariant();
-        if (s.Contains("doc") || s.Contains("essent") || s.Contains("money") || s.Contains("passport") || s.Contains("wallet")) return "Essentials & Documents";
-        if (s.Contains("cloth") || s.Contains("footwear") || s.Contains("wear") || s.Contains("shoe") || s.Contains("pant") || s.Contains("shirt")) return "Clothes & Footwear";
-        if (s.Contains("toil") || s.Contains("hygiene") || s.Contains("bath") || s.Contains("cosmetic")) return "Toiletries & Hygiene";
-        if (s.Contains("electr") || s.Contains("tech") || s.Contains("gadget") || s.Contains("device")) return "Electronics & Tech";
-        if (s.Contains("health") || s.Contains("well") || s.Contains("med") || s.Contains("first aid") || s.Contains("pharmacy")) return "Health & Wellness";
-        if (s.Contains("misc") || s.Contains("gear") || s.Contains("tool")) return "Miscellaneous & Gear";
-        return section.Trim();
+        return $$"""
+            You are ReadyRoam's expert AI Trip Architect & Packing Specialist.
+            Your job is to analyze natural language travel prompts, extract trip parameters, validate required info, and generate a structured Trip Skeleton with weather context, packing items, and next actionable steps.
+
+            CURRENT DATE CONTEXT: Today is {{today:yyyy-MM-dd}} (UTC). Default to year {{currentYear}} unless a specific future date or month requires {{currentYear + 1}}.
+            {{bookedSection}}
+
+            REQUIRED INFORMATION:
+            1. Destination (City and Country) — both MUST be identifiable.
+            2. Travel Dates / Timeframe — exact dates or flexible timeframe (month/season + duration).
+
+            VALIDATION LOGIC:
+            - If Destination is missing or ambiguous: set success=false, errorMessage explains what is missing, missingFields=["City","Country"], skeleton=null.
+            - If no timeframe can be identified: set success=false, errorMessage explains, missingFields=["DepartDate","ReturnDate"], skeleton=null.
+            - If all required details are present: set success=true, generate full skeleton with 8-15 curated packing items across sections: "clothes","electro","documents","toiletries","tools".
+
+            PACKING ITEMS: Each item must include "section","title","quantity","tag" ("essential"|"important"|"safety"|"optional"),"iconEmoji","reason".
+            NEXT POSSIBLE ACTIONS: 0-3 packing or luggage refinement suggestions only. NO dining, museum ticket, flight, or hotel suggestions.
+
+            OUTPUT FORMAT: STRICTLY raw, valid JSON. No markdown fences.
+
+            JSON SCHEMA:
+            {
+              "success": true,
+              "successMessage": "...",
+              "errorMessage": null,
+              "missingFields": null,
+              "skeleton": { "city":"...", "country":"...", "countryFlag":"...", "bannerImage":"...", "departDate":"YYYY-MM-DD", "returnDate":"YYYY-MM-DD", "durationDays":7, "tags":[], "weatherSummary":"...", "currentSeason":"...", "items":[] },
+              "nextPossibleActions": []
+            }
+            """;
     }
 
-    public static AIPackingCopilotResponse ReconcileCopilotDiff(List<CopilotExistingItemDto> existingItems, GeminiCopilotDiffOutput output, string? userPrompt)
+    private static TripGeneratorResponse ValidateConflicts(TripGeneratorResponse result, List<ExistingTripDateDto> trips)
     {
-        if (!output.Success)
-        {
-            return new AIPackingCopilotResponse(
-                Success: false,
-                Explanation: output.Explanation,
-                Additions: new List<CopilotAdditionDto>(),
-                Removals: new List<CopilotRemovalDto>(),
-                Modifications: new List<CopilotModificationDto>(),
-                NextActions: new List<string>(),
-                ErrorMessage: output.ErrorMessage ?? "Copilot was unable to produce suggestions."
-            );
-        }
+        if (!result.Success || result.Skeleton is null || trips.Count == 0) return result;
 
-        var additions = new List<CopilotAdditionDto>();
-        var removals = new List<CopilotRemovalDto>();
-        var modifications = new List<CopilotModificationDto>();
+        var skeleton = result.Skeleton;
+        var conflict = trips.FirstOrDefault(t =>
+            (skeleton.DepartDate < t.ReturnDate && skeleton.ReturnDate > t.DepartDate) ||
+            (skeleton.DepartDate == skeleton.ReturnDate && t.DepartDate == t.ReturnDate && skeleton.DepartDate == t.DepartDate));
 
-        var existingTitles = new HashSet<string>(existingItems.Select(i => i.Title.Trim().ToLowerInvariant()), StringComparer.OrdinalIgnoreCase);
-        var existingById = existingItems.ToDictionary(i => i.Id);
-        var existingByTitle = existingItems.GroupBy(i => i.Title.Trim().ToLowerInvariant(), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
-        var existingSections = existingItems
-            .Select(i => i.Section)
-            .Where(s => !string.IsNullOrWhiteSpace(s))
-            .Select(s => s.Trim())
-            .Distinct()
-            .ToList();
+        if (conflict is null) return result;
 
-        var promptMentionsRemove = !string.IsNullOrWhiteSpace(userPrompt) &&
-            (userPrompt.Contains("remove", StringComparison.OrdinalIgnoreCase) ||
-             userPrompt.Contains("delete", StringComparison.OrdinalIgnoreCase) ||
-             userPrompt.Contains("packed", StringComparison.OrdinalIgnoreCase) ||
-             userPrompt.Contains("прибери", StringComparison.OrdinalIgnoreCase) ||
-             userPrompt.Contains("видали", StringComparison.OrdinalIgnoreCase));
-
-        if (output.Additions != null && output.Additions.Count > 0)
-        {
-            foreach (var toAdd in output.Additions)
-            {
-                var title = toAdd.Title?.Trim();
-                if (string.IsNullOrWhiteSpace(title)) continue;
-
-                var key = title.ToLowerInvariant();
-                if (existingTitles.Add(key))
-                {
-                    additions.Add(new CopilotAdditionDto(
-                        Id: Guid.NewGuid(),
-                        Section: ResolveSectionName(toAdd.Section, existingSections),
-                        Title: title,
-                        Quantity: toAdd.Quantity > 0 ? toAdd.Quantity : 1,
-                        Tag: !string.IsNullOrWhiteSpace(toAdd.Tag) ? toAdd.Tag : "Important",
-                        Reason: !string.IsNullOrWhiteSpace(toAdd.Reason) ? toAdd.Reason : "Recommended for your trip"
-                    ));
-                }
-            }
-        }
-
-        if (output.Removals != null && output.Removals.Count > 0)
-        {
-            var processedItemIds = new HashSet<Guid>();
-            foreach (var toRemove in output.Removals)
-            {
-                CopilotExistingItemDto? matched = null;
-                if (!string.IsNullOrWhiteSpace(toRemove.ItemId) && Guid.TryParse(toRemove.ItemId, out var parsedId))
-                {
-                    existingById.TryGetValue(parsedId, out matched);
-                }
-
-                if (matched == null && !string.IsNullOrWhiteSpace(toRemove.Title))
-                {
-                    existingByTitle.TryGetValue(toRemove.Title.Trim().ToLowerInvariant(), out matched);
-                }
-
-                if (matched == null) continue;
-                if (!processedItemIds.Add(matched.Id)) continue;
-
-                if (matched.IsPacked && !promptMentionsRemove)
-                {
-                    continue;
-                }
-
-                removals.Add(new CopilotRemovalDto(
-                    Id: Guid.NewGuid(),
-                    ItemId: matched.Id,
-                    Title: matched.Title,
-                    Section: matched.Section,
-                    Reason: !string.IsNullOrWhiteSpace(toRemove.Reason) ? toRemove.Reason : "Not needed for this trip"
-                ));
-            }
-        }
-
-        if (output.Modifications != null && output.Modifications.Count > 0)
-        {
-            var processedItemIds = new HashSet<Guid>();
-            foreach (var toMod in output.Modifications)
-            {
-                CopilotExistingItemDto? matched = null;
-                if (!string.IsNullOrWhiteSpace(toMod.ItemId) && Guid.TryParse(toMod.ItemId, out var parsedId))
-                {
-                    existingById.TryGetValue(parsedId, out matched);
-                }
-
-                if (matched == null && !string.IsNullOrWhiteSpace(toMod.Title))
-                {
-                    existingByTitle.TryGetValue(toMod.Title.Trim().ToLowerInvariant(), out matched);
-                }
-
-                if (matched == null) continue;
-                if (!processedItemIds.Add(matched.Id)) continue;
-
-                var newQty = toMod.NewQuantity > 0 ? toMod.NewQuantity : matched.Quantity;
-                var newTag = !string.IsNullOrWhiteSpace(toMod.NewTag) ? toMod.NewTag : matched.Tag;
-
-                if (newQty == matched.Quantity && string.Equals(newTag, matched.Tag, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                modifications.Add(new CopilotModificationDto(
-                    Id: Guid.NewGuid(),
-                    ItemId: matched.Id,
-                    Title: matched.Title,
-                    Section: matched.Section,
-                    CurrentQuantity: matched.Quantity,
-                    NewQuantity: newQty,
-                    NewTag: newTag,
-                    Reason: !string.IsNullOrWhiteSpace(toMod.Reason) ? toMod.Reason : "Adjusted for your trip"
-                ));
-            }
-        }
-
-        var nextActions = output.NextActions != null
-            ? output.NextActions.Where(a => !string.IsNullOrWhiteSpace(a)).Take(3).ToList()
-            : new List<string>();
-
-        return new AIPackingCopilotResponse(
-            Success: true,
-            Explanation: output.Explanation ?? "Generated packing suggestions based on your request.",
-            Additions: additions,
-            Removals: removals,
-            Modifications: modifications,
-            NextActions: nextActions,
-            ErrorMessage: null
+        return new TripGeneratorResponse(
+            Success: false,
+            SuccessMessage: null,
+            ErrorMessage: $"The requested dates ({skeleton.DepartDate:yyyy-MM-dd} to {skeleton.ReturnDate:yyyy-MM-dd}) conflict with your existing trip to '{conflict.Destination}' ({conflict.DepartDate:yyyy-MM-dd} to {conflict.ReturnDate:yyyy-MM-dd}). Multiple trips cannot cover the same date range.",
+            MissingFields: new() { "DepartDate", "ReturnDate" },
+            Skeleton: null,
+            NextPossibleActions: new() { "Choose a different date range", "Reschedule conflicting trip", "Adjust duration to avoid date collision" }
         );
     }
 }
-
-public record GeminiGenerateContentResponse(
-    [property: JsonPropertyName("candidates")] List<GeminiCandidate>? Candidates
-);
-
-public record GeminiCandidate(
-    [property: JsonPropertyName("content")] GeminiContent? Content,
-    [property: JsonPropertyName("finishReason")] string? FinishReason
-);
-
-public record GeminiContent(
-    [property: JsonPropertyName("parts")] List<GeminiPart>? Parts,
-    [property: JsonPropertyName("role")] string? Role
-);
-
-public record GeminiPart(
-    [property: JsonPropertyName("text")] string? Text
-);

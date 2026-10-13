@@ -1,9 +1,13 @@
 using System.Reflection;
+using Microsoft.Extensions.Options;
 using Microsoft.OpenApi;
 using WeatherService.Endpoints;
 using WeatherService.Services;
+using WeatherService.Settings;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.Configure<RedisSettings>(builder.Configuration.GetSection("Redis"));
 
 builder.Services.AddHttpClient<OpenMeteoWeatherService>(client =>
 {
@@ -16,13 +20,12 @@ builder.Services.AddStackExchangeRedisCache(options =>
     options.InstanceName = "ReadyRoam_";
 });
 
-builder.Services.AddScoped<OpenMeteoWeatherService>();
 builder.Services.AddScoped<IWeatherProviderService>(sp =>
 {
     var openMeteo = sp.GetRequiredService<OpenMeteoWeatherService>();
     var cache = sp.GetRequiredService<Microsoft.Extensions.Caching.Distributed.IDistributedCache>();
-    var config = sp.GetRequiredService<IConfiguration>();
-    return new CachedWeatherService(openMeteo, cache, config);
+    var redisOptions = sp.GetRequiredService<IOptions<RedisSettings>>();
+    return new CachedWeatherService(openMeteo, cache, redisOptions);
 });
 
 builder.Services.AddEndpointsApiExplorer();

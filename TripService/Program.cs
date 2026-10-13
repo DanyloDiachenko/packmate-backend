@@ -7,6 +7,9 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using TripService.Data;
 using TripService.Endpoints;
+using TripService.Infrastructure;
+using TripService.Services;
+using TripService.Workers;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -52,7 +55,8 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 var jwtSection = builder.Configuration.GetSection("Jwt");
-var secretKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSection["Key"]!));
+var rawKey = jwtSection["Key"];
+var secretKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(string.IsNullOrEmpty(rawKey) ? "DefaultDevelopmentSecretKeyThatIsAtLeast32BytesLong!" : rawKey));
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -69,6 +73,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
+// Named clients retained for endpoints that still use IHttpClientFactory directly
 builder.Services.AddHttpClient("WeatherService", client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["Services:WeatherService"] ?? "http://weather-service:8080");
@@ -90,6 +95,41 @@ builder.Services.AddHttpClient("PresetService", client =>
     client.BaseAddress = new Uri(builder.Configuration["Services:PresetService"] ?? "http://preset-service:8080");
 });
 
+builder.Services.AddHttpClient("NotificationService", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Services:NotificationService"] ?? "http://notification-service:8080");
+});
+
+// Auth propagation for typed clients
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddTransient<AuthPropagatingHandler>();
+
+// Typed clients for WeatherIntelligenceService
+builder.Services.AddHttpClient<IWeatherServiceClient, WeatherServiceClient>(client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Services:WeatherService"] ?? "http://weather-service:8080");
+});
+
+builder.Services.AddHttpClient<IAiServiceClient, AiServiceClient>(client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Services:AIService"] ?? "http://ai-service:8080");
+    client.Timeout = TimeSpan.FromSeconds(35);
+}).AddHttpMessageHandler<AuthPropagatingHandler>();
+
+builder.Services.AddHttpClient<ITripItemsServiceClient, TripItemsServiceClient>(client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Services:TripItemsService"] ?? "http://trip-items-service:8080");
+}).AddHttpMessageHandler<AuthPropagatingHandler>();
+
+builder.Services.AddHttpClient<INotificationServiceClient, NotificationServiceClient>(client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Services:NotificationService"] ?? "http://notification-service:8080");
+}).AddHttpMessageHandler<AuthPropagatingHandler>();
+
+builder.Services.AddScoped<IWeatherIntelligenceService, WeatherIntelligenceService>();
+builder.Services.AddScoped<ITripConflictChecker, TripConflictChecker>();
+builder.Services.AddScoped<ITripArchiveService, TripArchiveService>();
+builder.Services.AddHostedService<WeatherIntelligenceBackgroundWorker>();
 
 builder.Services.AddAuthorization();
 
@@ -109,6 +149,7 @@ using (var scope = app.Services.CreateScope())
 
 app.MapGroup("/trips")
    .RequireAuthorization()
-   .MapTripEndpoints();
+   .MapTripEndpoints()
+   .MapWeatherIntelligenceEndpoints();
 
 app.Run();

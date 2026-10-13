@@ -5,26 +5,22 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using FluentValidation;
 using AIService.Endpoints;
+using AIService.Infrastructure;
 using AIService.Services;
+using AIService.Settings;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var baseUrl = builder.Configuration["AiSettings:BaseUrl"] ?? "https://generativelanguage.googleapis.com/v1beta/";
-builder.Services.AddHttpClient<IAIService, LlmPackingService>(client =>
+builder.Services.Configure<AiSettings>(builder.Configuration.GetSection("AiSettings"));
+
+var geminiBase = builder.Configuration["AiSettings:BaseUrl"] ?? "https://generativelanguage.googleapis.com/v1beta/";
+builder.Services.AddHttpClient<GeminiClient>(client =>
 {
-    client.BaseAddress = new Uri(baseUrl);
+    client.BaseAddress = new Uri(geminiBase.EndsWith('/') ? geminiBase : geminiBase + "/");
     client.Timeout = TimeSpan.FromSeconds(90);
 });
 
-builder.Services.AddHttpClient("TripService", client =>
-{
-    client.BaseAddress = new Uri(builder.Configuration["Services:TripService"] ?? "http://trip-service:8080");
-});
-
-builder.Services.AddHttpClient("TripItemsService", client =>
-{
-    client.BaseAddress = new Uri(builder.Configuration["Services:TripItemsService"] ?? "http://trip-items-service:8080");
-});
+builder.Services.AddScoped<IAIService, LlmPackingService>();
 
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 

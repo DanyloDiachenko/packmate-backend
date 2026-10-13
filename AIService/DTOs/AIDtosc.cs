@@ -224,3 +224,57 @@ public record TripDetailResponseDto(
     DateTime CreatedAt
 );
 
+public record WeatherRepackForecastDeltaDto(
+    string Date,
+    int? RainProbability,
+    int? NightTemp,
+    int? DayTemp,
+    int? UvIndex,
+    int? WindSpeed,
+    string? Condition,
+    string Delta
+);
+
+public record WeatherRepackRequestDto(
+    string Destination,
+    string Dates,
+    List<WeatherRepackForecastDeltaDto> ForecastDelta,
+    List<string> ExistingTripItems
+);
+
+public record WeatherHighlightDto(
+    string Icon,
+    string IconColor,
+    string Title,
+    string Detail
+);
+
+public record WeatherProposalDto(
+    Guid Id,
+    string Title,
+    string Section,
+    int Quantity,
+    string Tag,
+    string Reason
+);
+
+public record WeatherRepackResponseDto(
+    List<WeatherHighlightDto> Highlights,
+    List<WeatherProposalDto> Proposals,
+    string? ExistingMatchedNotice
+);
+
+public record GeminiWeatherProposal(
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("section")] string Section,
+    [property: JsonPropertyName("quantity")] int Quantity,
+    [property: JsonPropertyName("tag")] string Tag,
+    [property: JsonPropertyName("reason")] string Reason
+);
+
+public record GeminiWeatherRepackOutput(
+    [property: JsonPropertyName("highlights")] List<WeatherHighlightDto>? Highlights,
+    [property: JsonPropertyName("proposals")] List<GeminiWeatherProposal>? Proposals,
+    [property: JsonPropertyName("existingMatchedNotice")] string? ExistingMatchedNotice
+);
+

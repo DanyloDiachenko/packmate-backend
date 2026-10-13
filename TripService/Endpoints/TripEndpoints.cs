@@ -7,6 +7,7 @@ using TripService.Extensions;
 using TripService.DTOs;
 using TripService.Entities;
 using TripService.Clients;
+using TripService.Services;
 
 namespace TripService.Endpoints;
 
@@ -23,16 +24,12 @@ public static class TripEndpoints
             [FromQuery] bool? isArchived,
             ClaimsPrincipal userClaims,
             TripDbContext db,
+            ITripArchiveService archiveService,
             CancellationToken ct
         ) =>
         {
             var userId = userClaims.GetUserId();
-            var today = DateOnly.FromDateTime(DateTime.UtcNow);
-            var cutoffDate = today.AddDays(-1);
-
-            await db.Trips
-                .Where(t => t.UserId == userId && !t.IsArchived && t.ReturnDate <= cutoffDate)
-                .ExecuteUpdateAsync(s => s.SetProperty(t => t.IsArchived, true), ct);
+            await archiveService.AutoArchiveExpiredAsync(userId, ct);
 
             var baseQuery = db.Trips
                 .AsNoTracking()
@@ -63,19 +60,7 @@ public static class TripEndpoints
                 query = query.Take(effectiveLimit.Value);
             }
 
-            var trips = await query
-                .Select(t => new TripResponse(
-                    t.Id,
-                    t.UserId,
-                    t.Destination,
-                    t.DepartDate,
-                    t.ReturnDate,
-                    t.Tags,
-                    t.IsArchived,
-                    t.CreatedAt
-                ))
-                .ToListAsync(ct);
-
+            var trips = (await query.ToListAsync(ct)).Select(t => t.ToResponse()).ToList();
             return Results.Ok(new PaginatedTripsResponse(totalItems, trips));
         })
         .WithName("GetUserTrips")
@@ -88,37 +73,20 @@ public static class TripEndpoints
             Guid id,
             ClaimsPrincipal userClaims,
             TripDbContext db,
+            ITripArchiveService archiveService,
             CancellationToken ct
         ) =>
         {
             var userId = userClaims.GetUserId();
-            var today = DateOnly.FromDateTime(DateTime.UtcNow);
-            var cutoffDate = today.AddDays(-1);
-
-            var trip = await db.Trips
-                .FirstOrDefaultAsync(t => t.Id == id && t.UserId == userId, ct);
+            var trip = await db.Trips.FirstOrDefaultAsync(t => t.Id == id && t.UserId == userId, ct);
 
             if (trip == null)
             {
                 return Results.NotFound(new ErrorResponse("Trip was not found"));
             }
 
-            if (!trip.IsArchived && trip.ReturnDate <= cutoffDate)
-            {
-                trip.IsArchived = true;
-                await db.SaveChangesAsync(ct);
-            }
-
-            return Results.Ok(new TripResponse(
-                trip.Id,
-                trip.UserId,
-                trip.Destination,
-                trip.DepartDate,
-                trip.ReturnDate,
-                trip.Tags,
-                trip.IsArchived,
-                trip.CreatedAt
-            ));
+            await archiveService.AutoArchiveIfExpiredAsync(trip, ct);
+            return Results.Ok(trip.ToResponse());
         })
         .WithName("GetTripById")
         .WithSummary("Get a trip by ID")
@@ -131,7 +99,8 @@ public static class TripEndpoints
             CreateTripRequest request,
             IValidator<CreateTripRequest> validator,
             ClaimsPrincipal userClaims,
-            TripDbContext db
+            TripDbContext db,
+            ITripConflictChecker conflictChecker
         ) =>
         {
             var validationResult = await validator.ValidateAsync(request);
@@ -142,14 +111,7 @@ public static class TripEndpoints
 
             var userId = userClaims.GetUserId();
 
-            var hasOverlap = await db.Trips.AnyAsync(t =>
-                t.UserId == userId &&
-                (
-                    (request.DepartDate < t.ReturnDate && request.ReturnDate > t.DepartDate) ||
-                    (request.DepartDate == request.ReturnDate && t.DepartDate == t.ReturnDate && request.DepartDate == t.DepartDate)
-                ));
-
-            if (hasOverlap)
+            if (await conflictChecker.HasOverlapAsync(userId, request.DepartDate, request.ReturnDate))
             {
                 return Results.BadRequest(new ErrorResponse("Trip dates overlap with an existing trip. Multiple trips cannot cover the same date range."));
             }
@@ -168,17 +130,7 @@ public static class TripEndpoints
             db.Trips.Add(trip);
             await db.SaveChangesAsync();
 
-            var response = new TripResponse(
-                trip.Id,
-                trip.UserId,
-                trip.Destination,
-                trip.DepartDate,
-                trip.ReturnDate,
-                trip.Tags,
-                trip.IsArchived,
-                trip.CreatedAt
-            );
-            return Results.Created($"/trips/{trip.Id}", response);
+            return Results.Created($"/trips/{trip.Id}", trip.ToResponse());
         })
         .WithName("CreateTrip")
         .WithSummary("Create a new trip")
@@ -194,6 +146,7 @@ public static class TripEndpoints
             IValidator<CreateTripRequest> validator,
             ClaimsPrincipal userClaims,
             TripDbContext db,
+            ITripConflictChecker conflictChecker,
             IHttpClientFactory httpFactory,
             HttpContext httpContext,
             CancellationToken ct
@@ -207,14 +160,7 @@ public static class TripEndpoints
 
             var userId = userClaims.GetUserId();
 
-            var hasOverlap = await db.Trips.AnyAsync(t =>
-                t.UserId == userId &&
-                (
-                    (request.DepartDate < t.ReturnDate && request.ReturnDate > t.DepartDate) ||
-                    (request.DepartDate == request.ReturnDate && t.DepartDate == t.ReturnDate && request.DepartDate == t.DepartDate)
-                ), ct);
-
-            if (hasOverlap)
+            if (await conflictChecker.HasOverlapAsync(userId, request.DepartDate, request.ReturnDate, ct: ct))
             {
                 return Results.BadRequest(new ErrorResponse("Trip dates overlap with an existing trip. Multiple trips cannot cover the same date range."));
             }
@@ -289,17 +235,7 @@ public static class TripEndpoints
                 }
             }
 
-            var response = new TripResponse(
-                trip.Id,
-                trip.UserId,
-                trip.Destination,
-                trip.DepartDate,
-                trip.ReturnDate,
-                trip.Tags,
-                trip.IsArchived,
-                trip.CreatedAt
-            );
-            return Results.Created($"/trips/{trip.Id}", response);
+            return Results.Created($"/trips/{trip.Id}", trip.ToResponse());
         })
         .WithName("CreateTripWithPreset")
         .WithSummary("Create a new trip and populate packing items from a preset")
@@ -317,7 +253,8 @@ public static class TripEndpoints
             UpdateTripRequest request,
             IValidator<UpdateTripRequest> validator,
             ClaimsPrincipal userClaims,
-            TripDbContext db
+            TripDbContext db,
+            ITripConflictChecker conflictChecker
         ) =>
         {
             var validationResult = await validator.ValidateAsync(request);
@@ -344,15 +281,7 @@ public static class TripEndpoints
                 var targetDepart = request.DepartDate != default ? request.DepartDate : trip.DepartDate;
                 var targetReturn = request.ReturnDate != default ? request.ReturnDate : trip.ReturnDate;
 
-                var hasOverlap = await db.Trips.AnyAsync(t =>
-                    t.UserId == userId &&
-                    t.Id != id &&
-                    (
-                        (targetDepart < t.ReturnDate && targetReturn > t.DepartDate) ||
-                        (targetDepart == targetReturn && t.DepartDate == t.ReturnDate && targetDepart == t.DepartDate)
-                    ));
-
-                if (hasOverlap)
+                if (await conflictChecker.HasOverlapAsync(userId, targetDepart, targetReturn, excludeId: id))
                 {
                     return Results.BadRequest(new ErrorResponse("Trip dates overlap with an existing trip. Multiple trips cannot cover the same date range."));
                 }
@@ -364,16 +293,7 @@ public static class TripEndpoints
             if (request.Tags != null) trip.Tags = request.Tags;
             if (request.IsArchived.HasValue) trip.IsArchived = request.IsArchived.Value;
             await db.SaveChangesAsync();
-            return Results.Ok(new TripResponse(
-                trip.Id,
-                trip.UserId,
-                trip.Destination,
-                trip.DepartDate,
-                trip.ReturnDate,
-                trip.Tags,
-                trip.IsArchived,
-                trip.CreatedAt
-            ));
+            return Results.Ok(trip.ToResponse());
         })
         .WithName("UpdateTrip")
         .WithSummary("Partially update an existing trip")
@@ -400,17 +320,7 @@ public static class TripEndpoints
 
             trip.IsArchived = true;
             await db.SaveChangesAsync();
-
-            return Results.Ok(new TripResponse(
-                trip.Id,
-                trip.UserId,
-                trip.Destination,
-                trip.DepartDate,
-                trip.ReturnDate,
-                trip.Tags,
-                trip.IsArchived,
-                trip.CreatedAt
-            ));
+            return Results.Ok(trip.ToResponse());
         })
         .WithName("ArchiveTrip")
         .WithSummary("Archive a trip")
@@ -435,17 +345,7 @@ public static class TripEndpoints
 
             trip.IsArchived = false;
             await db.SaveChangesAsync();
-
-            return Results.Ok(new TripResponse(
-                trip.Id,
-                trip.UserId,
-                trip.Destination,
-                trip.DepartDate,
-                trip.ReturnDate,
-                trip.Tags,
-                trip.IsArchived,
-                trip.CreatedAt
-            ));
+            return Results.Ok(trip.ToResponse());
         })
         .WithName("UnarchiveTrip")
         .WithSummary("Unarchive a trip")

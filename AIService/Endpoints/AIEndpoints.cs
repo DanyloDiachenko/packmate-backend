@@ -202,6 +202,32 @@ public static class AIEndpoints
             .ProducesValidationProblem()
             .ProducesProblem(StatusCodes.Status502BadGateway);
 
+        group.MapPost("/weather-repack", async (
+            WeatherRepackRequestDto request,
+            IAIService aiService,
+            CancellationToken ct
+        ) =>
+        {
+            try
+            {
+                var result = await aiService.GenerateWeatherRepackDiffAsync(request, ct);
+                return Results.Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return Results.Problem(
+                    detail: ex.Message,
+                    statusCode: StatusCodes.Status502BadGateway,
+                    title: "Weather Repack AI Error"
+                );
+            }
+        })
+        .WithName("WeatherRepack")
+        .WithSummary("Generate weather-based packing adjustments")
+        .WithDescription("Analyzes forecast deltas against existing trip items to suggest highlights, additions, and verified existing items.")
+        .Produces<WeatherRepackResponseDto>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status502BadGateway);
+
         return group;
     }
 }

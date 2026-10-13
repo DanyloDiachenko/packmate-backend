@@ -60,6 +60,7 @@ services:
       - Services__TripItemsService=http://trip-items-service:8080
       - Services__AIService=http://ai-service:8080
       - Services__PresetService=http://preset-service:8080
+      - Services__NotificationService=http://notification-service:8080
       - Jwt__Key=${JWT_SECRET_KEY}
       - Jwt__Issuer=${JWT_ISSUER}
       - Jwt__Audience=${JWT_AUDIENCE}
@@ -150,6 +151,21 @@ services:
       - Jwt__Issuer=${JWT_ISSUER}
       - Jwt__Audience=${JWT_AUDIENCE}
 
+  notification-service:
+    build:
+      context: .
+      dockerfile: NotificationService/Dockerfile
+    container_name: packmate-notification-service
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=packmate_notifications_db;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      - Jwt__Key=${JWT_SECRET_KEY}
+      - Jwt__Issuer=${JWT_ISSUER}
+      - Jwt__Audience=${JWT_AUDIENCE}
+
   api-gateway:
     build:
       context: .
@@ -167,6 +183,7 @@ services:
       - destination-service
       - mail-service
       - preset-service
+      - notification-service
 
 
   pgadmin:

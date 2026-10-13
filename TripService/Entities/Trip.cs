@@ -14,5 +14,8 @@ public class Trip
     public List<string> Tags { get; set; } = new();
     public bool IsArchived { get; set; } = false;
 
+    public bool HasWeatherImpact { get; set; } = false;
+    public DateTime? LastWeatherCheckAt { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
